@@ -36,6 +36,10 @@ from google_chat_to_html import (
 from tasks import find_tasks_dir, load_task_lists, render_tasks_docx
 from calendar_archive import find_calendar_dir, load_calendars, render_calendar_html
 from keep_archive import find_keep_dir, load_notes, render_keep_html
+from chrome_archive import (
+    find_chrome_dir, load_extensions, render_extensions_html,
+    PASSTHROUGH_FILES,
+)
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB hard cap
@@ -152,6 +156,20 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
         <div class="output-info">
           <strong>google-keep-archive.html</strong>
           <span>All Keep notes with colours, pin/archive state, checklists, and label filtering.</span>
+        </div>
+      </div>
+      <div class="output-item">
+        <div class="output-icon">🔖</div>
+        <div class="output-info">
+          <strong>chrome/Bookmarks.html &amp; Reading List.html</strong>
+          <span>Browser-importable bookmark files, passed through unchanged.</span>
+        </div>
+      </div>
+      <div class="output-item">
+        <div class="output-icon">🧩</div>
+        <div class="output-info">
+          <strong>chrome-extensions.html</strong>
+          <span>Your installed extensions with direct links to the Chrome Web Store install pages.</span>
         </div>
       </div>
     </div>
@@ -319,6 +337,43 @@ def process():
                     errors.append("Google Keep: not present in this export")
             except Exception as e:
                 errors.append(f"Google Keep error: {e}")
+
+            # ── Chrome ───────────────────────────────────────────────────────
+            try:
+                chrome_dir = find_chrome_dir(extract_dir)
+                if chrome_dir:
+                    chrome_results: list[str] = []
+
+                    # Pass through importable files unchanged.
+                    passed: list[str] = []
+                    for name in PASSTHROUGH_FILES:
+                        src = chrome_dir / name
+                        if src.exists():
+                            out_zip.write(src, f"chrome/{name}")
+                            passed.append(name)
+
+                    # Extensions → HTML with Web Store links.
+                    extensions = load_extensions(chrome_dir)
+                    if extensions:
+                        ext_html = render_extensions_html(extensions)
+                        out_zip.writestr("chrome-extensions.html",
+                                         ext_html.encode("utf-8"))
+                        chrome_results.append(
+                            f"{len(extensions)} extension"
+                            f"{'s' if len(extensions) != 1 else ''}"
+                        )
+
+                    if passed:
+                        chrome_results.append(f"bookmarks ({', '.join(passed)})")
+
+                    if chrome_results:
+                        results.append("Chrome: " + ", ".join(chrome_results))
+                    else:
+                        errors.append("Chrome: directory found but no usable files")
+                else:
+                    errors.append("Chrome: not present in this export")
+            except Exception as e:
+                errors.append(f"Chrome error: {e}")
 
         if not results:
             return _error_page(
