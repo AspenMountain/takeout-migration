@@ -483,14 +483,25 @@ html, body { height: 100%; overflow: hidden; }
 .convo-page { padding: 24px; max-width: 800px; display: none; }
 .convo-page-header { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .convo-page-header h2 { margin: 0 0 6px 0; font-size: 18px; }
+.thread.search-match {
+  outline: 2px solid var(--accent);
+  background: #f0f6ff !important;
+}
+.msg-match-badge {
+  font-size: 10px; font-weight: 600;
+  color: var(--accent); background: #e8f0fe;
+  padding: 1px 6px; border-radius: 999px;
+}
 """
 
 SINGLE_PAGE_JS = r"""
 (function () {
   var current = null;
+  var activeQuery = '';
   var main = document.getElementById('main');
   var welcome = document.getElementById('welcome');
 
+  /* ── navigation ─────────────────────────────────────────────────────── */
   function show(id) {
     if (current) {
       var prev = document.getElementById('page-' + current);
@@ -506,20 +517,81 @@ SINGLE_PAGE_JS = r"""
     if (item) item.classList.add('active');
     main.scrollTop = 0;
     current = id;
+    applyHighlights(page);
   }
 
   document.querySelectorAll('.convo-item').forEach(function (item) {
     item.addEventListener('click', function () { show(this.dataset.id); });
   });
 
-  var search = document.getElementById('search');
-  if (search) {
-    search.addEventListener('input', function () {
-      var q = this.value.trim().toLowerCase();
-      document.querySelectorAll('.convo-item').forEach(function (item) {
-        item.style.display = item.dataset.search.indexOf(q) !== -1 ? '' : 'none';
-      });
+  /* ── search ──────────────────────────────────────────────────────────── */
+  var searchInput = document.getElementById('search');
+  if (searchInput) {
+    searchInput.addEventListener('input', function () {
+      activeQuery = this.value.trim().toLowerCase();
+      filterSidebar();
+      if (current) {
+        var page = document.getElementById('page-' + current);
+        if (page) applyHighlights(page);
+      }
     });
+  }
+
+  function filterSidebar() {
+    var q = activeQuery;
+    document.querySelectorAll('.convo-item').forEach(function (item) {
+      var id = item.dataset.id;
+      var titleMatch = !q || item.dataset.search.indexOf(q) !== -1;
+
+      var msgMatchCount = 0;
+      if (q.length >= 2 && typeof MSG_INDEX !== 'undefined') {
+        var msgs = MSG_INDEX[id];
+        if (msgs) {
+          for (var i = 0; i < msgs.length; i++) {
+            if (msgs[i].indexOf(q) !== -1) msgMatchCount++;
+          }
+        }
+      }
+
+      item.style.display = (!q || titleMatch || msgMatchCount > 0) ? '' : 'none';
+
+      var badge = item.querySelector('.msg-match-badge');
+      if (q.length >= 2 && msgMatchCount > 0) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'msg-match-badge';
+          item.querySelector('.convo-item-meta').appendChild(badge);
+        }
+        badge.textContent = msgMatchCount + (msgMatchCount === 1 ? ' match' : ' matches');
+        badge.style.display = '';
+      } else if (badge) {
+        badge.style.display = 'none';
+      }
+    });
+  }
+
+  function applyHighlights(page) {
+    page.querySelectorAll('.thread.search-match').forEach(function (el) {
+      el.classList.remove('search-match');
+    });
+    if (activeQuery.length < 2) return;
+
+    var q = activeQuery;
+    var first = null;
+    page.querySelectorAll('.thread').forEach(function (thread) {
+      if (thread.textContent.toLowerCase().indexOf(q) !== -1) {
+        thread.classList.add('search-match');
+        if (!first) first = thread;
+      }
+    });
+
+    if (first) {
+      setTimeout(function () {
+        var mainRect = main.getBoundingClientRect();
+        var elRect = first.getBoundingClientRect();
+        main.scrollTop = main.scrollTop + (elRect.top - mainRect.top) - 80;
+      }, 20);
+    }
   }
 })();
 """
@@ -712,6 +784,8 @@ def render_single_page_html(conversations: list[Conversation], owner: Member | N
 
     sidebar_items: list[str] = []
     pages: list[str] = []
+    # msg_index: slug → list of lowercase message texts, used by in-page search
+    msg_index: dict[str, list[str]] = {}
 
     for c in conversations:
         last = c.last_activity.strftime("%Y-%m-%d") if c.last_activity else "—"
@@ -741,6 +815,23 @@ def render_single_page_html(conversations: list[Conversation], owner: Member | N
             f'</div>'
         )
 
+        # Build search index: store plain lowercase text for each message.
+        # Author name is included so searching by name works too.
+        texts: list[str] = []
+        for m in c.messages:
+            parts = []
+            creator = m.get("creator") or {}
+            if creator.get("name"):
+                parts.append(creator["name"])
+            text = (m.get("text") or "").strip()
+            if text:
+                parts.append(text)
+            if parts:
+                texts.append(" ".join(parts).lower())
+        msg_index[c.slug] = texts
+
+    msg_index_json = json.dumps(msg_index, ensure_ascii=False, separators=(",", ":"))
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -759,7 +850,7 @@ def render_single_page_html(conversations: list[Conversation], owner: Member | N
       <div id="sidebar-title">Google Chat Archive</div>
       <div id="sidebar-meta">Owner: {owner_line}</div>
       <div id="sidebar-stats">{len(conversations)} conversations · {total_msgs} messages</div>
-      <input id="search" type="search" placeholder="Filter conversations…" autocomplete="off">
+      <input id="search" type="search" placeholder="Search conversations &amp; messages…" autocomplete="off">
     </div>
     <ul id="convo-list">{''.join(sidebar_items)}</ul>
   </nav>
@@ -772,7 +863,10 @@ def render_single_page_html(conversations: list[Conversation], owner: Member | N
     {''.join(pages)}
   </main>
 </div>
-<script>{SINGLE_PAGE_JS}</script>
+<script>
+const MSG_INDEX = {msg_index_json};
+{SINGLE_PAGE_JS}
+</script>
 </body>
 </html>
 """
