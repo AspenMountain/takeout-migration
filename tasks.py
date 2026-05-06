@@ -3,25 +3,27 @@ tasks.py
 --------
 Parse Google Tasks from a Takeout export and render to DOCX.
 
-Google Takeout places each task list in a separate JSON file under a
-``Tasks/`` directory.  File names are the list titles (e.g. "My Tasks.json").
-
-Observed JSON schema
---------------------
-Top-level dict with:
-    kind   : "tasks#taskList"  (optional)
-    title  : str               (list name; fall back to filename if missing)
-    items  : list of task dicts
+Observed Takeout schema (as of 2026)
+-------------------------------------
+Single file  Tasks/Tasks.json  with:
+    kind  : "tasks#taskLists"
+    items : list of task-list dicts, each containing:
+        kind    : "tasks#tasks"
+        id      : str
+        title   : str
+        updated : ISO-8601 timestamp
+        items   : list of task dicts
 
 Each task dict:
-    id       : str
-    title    : str
-    status   : "needsAction" | "completed"
-    notes    : str  (optional)
-    due      : ISO-8601 date string  (optional)
-    completed: ISO-8601 date string  (optional, when status=="completed")
-    parent   : str  (id of parent task; absent on root tasks)
-    position : str  (lexicographic sort key within the list)
+    id        : str
+    title     : str
+    status    : "needsAction" | "completed"
+    notes     : str             (optional)
+    due       : ISO-8601 timestamp  (optional)
+    completed : ISO-8601 timestamp  (optional, when status=="completed")
+    created   : ISO-8601 timestamp
+    parent    : str             (id of parent task; absent on root tasks)
+    starred   : bool            (optional)
 """
 
 from __future__ import annotations
@@ -67,9 +69,21 @@ def load_task_lists(tasks_dir: Path) -> list[dict]:
             continue
         if not isinstance(data, dict):
             continue
-        data.setdefault("title", path.stem)
-        data.setdefault("items", [])
-        task_lists.append(data)
+
+        # Current Takeout format: one file with kind="tasks#taskLists" that
+        # wraps all task lists as top-level items, each with its own items.
+        if data.get("kind") == "tasks#taskLists":
+            for task_list in data.get("items") or []:
+                if isinstance(task_list, dict):
+                    task_list.setdefault("title", path.stem)
+                    task_list.setdefault("items", [])
+                    task_lists.append(task_list)
+        else:
+            # Older / alternative format: one file per task list.
+            data.setdefault("title", path.stem)
+            data.setdefault("items", [])
+            task_lists.append(data)
+
     return task_lists
 
 
@@ -117,8 +131,8 @@ def render_tasks_docx(task_lists: list[dict]) -> io.BytesIO:
                 run.font.italic = True
             continue
 
-        # Sort by position string (lexicographic, as Google intends)
-        items = sorted(items, key=lambda t: t.get("position", ""))
+        # Tasks have no position field in current exports; sort by created time.
+        items = sorted(items, key=lambda t: t.get("created", ""))
 
         # Build child map: parent_id → [child, ...]
         child_map: dict[str, list[dict]] = {}
