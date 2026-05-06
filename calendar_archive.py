@@ -272,6 +272,19 @@ a:hover { text-decoration: underline; }
 .cal-item.active { background: #e8f0fe; font-weight: 600; }
 .cal-count { font-size: 11px; color: var(--muted); }
 .cal-item.active .cal-count { color: var(--accent); }
+#ics-downloads {
+  padding: 10px 16px; border-top: 1px solid var(--border);
+  font-size: 12px;
+}
+#ics-downloads-title {
+  font-size: 10px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em; margin-bottom: 6px;
+}
+.ics-link {
+  display: block; padding: 4px 0; color: var(--accent);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.ics-link:hover { text-decoration: underline; }
 #main { flex: 1; overflow-y: auto; padding: 24px; background: var(--bg); }
 .month-section { margin-bottom: 28px; }
 .month-header {
@@ -461,7 +474,7 @@ def _render_card(event: CalEvent) -> str:
     return ''.join(out)
 
 
-def render_calendar_html(calendars: list[dict]) -> str:
+def render_calendar_html(calendars: list[dict], ics_files: list[str] = ()) -> str:
     """Render all calendars into a single self-contained HTML file."""
     all_events: list[CalEvent] = []
     for cal in calendars:
@@ -511,6 +524,21 @@ def render_calendar_html(calendars: list[dict]) -> str:
         c['name'] for c in calendars if 'appointment' not in c['name'].lower()
     )
 
+    if ics_files:
+        ics_links = ''.join(
+            f'<a class="ics-link" href="calendar/{html.escape(name)}" download>'
+            f'⬇ {html.escape(name)}</a>'
+            for name in sorted(ics_files)
+        )
+        ics_section = (
+            f'<div id="ics-downloads">'
+            f'<div id="ics-downloads-title">Download ICS</div>'
+            f'{ics_links}'
+            f'</div>'
+        )
+    else:
+        ics_section = ''
+
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -534,6 +562,7 @@ def render_calendar_html(calendars: list[dict]) -> str:
       <label><input type="checkbox" id="recurring-only"> Recurring events only</label>
     </div>
     <ul id="cal-list">{''.join(sidebar)}</ul>
+    {ics_section}
   </nav>
   <main id="main">
     {''.join(sections)}

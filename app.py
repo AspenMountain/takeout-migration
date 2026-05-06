@@ -296,12 +296,15 @@ def process():
                 if cal_dir:
                     calendars = load_calendars(cal_dir)
                     if calendars:
-                        cal_html = render_calendar_html(calendars)
+                        ics_names = [
+                            p.name for p in sorted(cal_dir.iterdir())
+                            if p.suffix.lower() == ".ics"
+                        ]
+                        cal_html = render_calendar_html(calendars, ics_files=ics_names)
                         out_zip.writestr("google-calendar-archive.html",
                                          cal_html.encode("utf-8"))
-                        for ics_path in sorted(cal_dir.iterdir()):
-                            if ics_path.suffix.lower() == ".ics":
-                                out_zip.write(ics_path, f"calendar/{ics_path.name}")
+                        for name in ics_names:
+                            out_zip.write(cal_dir / name, f"calendar/{name}")
                         total_events = sum(len(c["events"]) for c in calendars)
                         results.append(
                             f"Google Calendar: {len(calendars)} calendars, "
@@ -375,6 +378,11 @@ def process():
             except Exception as e:
                 errors.append(f"Chrome error: {e}")
 
+            # ── Index ─────────────────────────────────────────────────────────
+            if results:
+                index_html = _render_index_html(out_zip.namelist(), results)
+                out_zip.writestr("index.html", index_html.encode("utf-8"))
+
         if not results:
             return _error_page(
                 "No recognisable Google data found in this ZIP.<br>"
@@ -404,6 +412,120 @@ def _safe_extract(zf: zipfile.ZipFile, dest: Path) -> None:
         except ValueError:
             continue  # skip entries that would escape dest
         zf.extract(member, dest)
+
+
+_HTML_ARCHIVE_INFO: dict[str, tuple[str, str, str]] = {
+    "google-chat-archive.html":     ("💬", "Google Chat",     "Searchable conversation browser"),
+    "google-calendar-archive.html": ("📅", "Google Calendar", "Events with attendees, Meet links, and calendar filter"),
+    "google-keep-archive.html":     ("🗒️", "Google Keep",     "Colour-coded notes with label and view filters"),
+    "chrome-extensions.html":       ("🧩", "Chrome Extensions","Links to reinstall each extension from the Web Store"),
+}
+
+_DOWNLOAD_INFO: dict[str, tuple[str, str, str]] = {
+    "google-tasks.docx":       ("✅", "Google Tasks",         "Task lists — open as a Google Doc or in Word"),
+    "chrome/Bookmarks.html":   ("🔖", "Chrome Bookmarks",    "Import into Chrome, Firefox, or Safari"),
+    "chrome/Reading List.html":("📖", "Chrome Reading List", "Import into Chrome"),
+}
+
+
+def _render_index_html(names: list[str], results: list[str]) -> str:
+    import datetime as dt
+    date_str = dt.date.today().strftime("%B %d, %Y")
+    name_set = set(names)
+
+    # HTML archives section
+    archive_cards = []
+    for fname, (icon, title, desc) in _HTML_ARCHIVE_INFO.items():
+        if fname in name_set:
+            archive_cards.append(
+                f'<a class="card" href="{fname}">'
+                f'<div class="card-icon">{icon}</div>'
+                f'<div class="card-body">'
+                f'<div class="card-title">{title}</div>'
+                f'<div class="card-desc">{desc}</div>'
+                f'</div></a>'
+            )
+
+    # Downloads section (DOCX, bookmarks, ICS files)
+    download_items = []
+    for fname, (icon, title, desc) in _DOWNLOAD_INFO.items():
+        if fname in name_set:
+            download_items.append(
+                f'<li><a href="{fname}" download>'
+                f'{icon} <strong>{title}</strong></a>'
+                f' <span class="dl-desc">— {desc}</span></li>'
+            )
+    ics_files = sorted(n for n in names if n.startswith("calendar/") and n.endswith(".ics"))
+    for ics in ics_files:
+        fname = ics.split("/")[-1]
+        download_items.append(
+            f'<li><a href="{ics}" download>'
+            f'📆 <strong>{fname}</strong></a>'
+            f' <span class="dl-desc">— Calendar data (import into Google Calendar, Apple Calendar, etc.)</span></li>'
+        )
+
+    archives_section = ""
+    if archive_cards:
+        archives_section = (
+            f'<h2>Browse</h2>'
+            f'<div class="card-grid">{"".join(archive_cards)}</div>'
+        )
+
+    downloads_section = ""
+    if download_items:
+        downloads_section = (
+            f'<h2>Import &amp; Download</h2>'
+            f'<ul class="dl-list">{"".join(download_items)}</ul>'
+        )
+
+    summary = " · ".join(results)
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Takeout Archive</title>
+<style>
+:root {{
+  --bg: #f7f7f8; --panel: #fff; --border: #e3e3e7;
+  --text: #1f2328; --muted: #6b7280; --accent: #1a73e8;
+}}
+* {{ box-sizing: border-box; }}
+body {{
+  margin: 0; padding: 40px 48px; background: var(--bg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  font-size: 14px; color: var(--text); line-height: 1.5;
+}}
+h1 {{ font-size: 26px; margin: 0 0 4px; }}
+.sub {{ color: var(--muted); font-size: 13px; margin: 0 0 32px; }}
+h2 {{ font-size: 12px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .06em; color: var(--muted); margin: 0 0 14px; }}
+.card-grid {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 36px; }}
+.card {{
+  display: flex; align-items: flex-start; gap: 14px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 10px; padding: 16px 20px;
+  text-decoration: none; color: var(--text);
+  width: 260px; transition: box-shadow .15s, border-color .15s;
+}}
+.card:hover {{ box-shadow: 0 2px 10px rgba(0,0,0,.08); border-color: #b0c4e8; }}
+.card-icon {{ font-size: 28px; line-height: 1; flex-shrink: 0; margin-top: 1px; }}
+.card-title {{ font-weight: 600; font-size: 14px; margin-bottom: 3px; color: var(--accent); }}
+.card-desc {{ font-size: 12px; color: var(--muted); }}
+.dl-list {{ list-style: none; padding: 0; margin: 0 0 36px; display: flex; flex-direction: column; gap: 10px; }}
+.dl-list a {{ color: var(--accent); text-decoration: none; }}
+.dl-list a:hover {{ text-decoration: underline; }}
+.dl-desc {{ color: var(--muted); font-size: 13px; }}
+</style>
+</head>
+<body>
+<h1>Takeout Archive</h1>
+<p class="sub">Generated {date_str} &nbsp;·&nbsp; {summary}</p>
+{archives_section}
+{downloads_section}
+</body>
+</html>"""
 
 
 def _error_page(message: str) -> tuple:
