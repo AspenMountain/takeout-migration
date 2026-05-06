@@ -1,8 +1,10 @@
 # Takeout Migration
 
-A stateless Flask web app that converts a Google Takeout ZIP export into
+A stateless Flask web app that converts a [Google Takeout](https://takeout.google.com) ZIP export into
 human-readable archives you can keep forever — without any accounts, databases,
 or cloud services involved.
+
+![alt text](image.png)
 
 ## What it produces
 
