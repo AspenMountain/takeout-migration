@@ -273,6 +273,9 @@ def process():
                         cal_html = render_calendar_html(calendars)
                         out_zip.writestr("google-calendar-archive.html",
                                          cal_html.encode("utf-8"))
+                        for ics_path in sorted(cal_dir.iterdir()):
+                            if ics_path.suffix.lower() == ".ics":
+                                out_zip.write(ics_path, f"calendar/{ics_path.name}")
                         total_events = sum(len(c["events"]) for c in calendars)
                         results.append(
                             f"Google Calendar: {len(calendars)} calendars, "
