@@ -13,8 +13,9 @@ Usage
 What it does
 ------------
 POST /process  accepts a Takeout ZIP and returns a ZIP containing:
-  - google-chat-archive.html  (single-page SPA, suitable for Google Drive)
-  - google-tasks.docx         (if the export contains Tasks data)
+  - google-chat-archive.html      (single-page SPA, suitable for Google Drive)
+  - google-tasks.docx             (if the export contains Tasks data)
+  - google-calendar-archive.html  (single-page SPA for Calendar events)
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from google_chat_to_html import (
     render_single_page_html,
 )
 from tasks import find_tasks_dir, load_task_lists, render_tasks_docx
+from calendar_archive import find_calendar_dir, load_calendars, render_calendar_html
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB hard cap
@@ -135,6 +137,13 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
         <div class="output-info">
           <strong>google-tasks.docx</strong>
           <span>All your task lists, with checkboxes, due dates, and notes. Opens as a Google Doc.</span>
+        </div>
+      </div>
+      <div class="output-item">
+        <div class="output-icon">📅</div>
+        <div class="output-info">
+          <strong>google-calendar-archive.html</strong>
+          <span>All calendar events with attendees, Meet links, and recurring-event flags. Filterable by calendar.</span>
         </div>
       </div>
     </div>
@@ -254,6 +263,27 @@ def process():
                     errors.append("Google Tasks: not present in this export")
             except Exception as e:
                 errors.append(f"Google Tasks error: {e}")
+
+            # ── Google Calendar ───────────────────────────────────────────
+            try:
+                cal_dir = find_calendar_dir(extract_dir)
+                if cal_dir:
+                    calendars = load_calendars(cal_dir)
+                    if calendars:
+                        cal_html = render_calendar_html(calendars)
+                        out_zip.writestr("google-calendar-archive.html",
+                                         cal_html.encode("utf-8"))
+                        total_events = sum(len(c["events"]) for c in calendars)
+                        results.append(
+                            f"Google Calendar: {len(calendars)} calendars, "
+                            f"{total_events} events"
+                        )
+                    else:
+                        errors.append("Google Calendar: directory found but no .ics files")
+                else:
+                    errors.append("Google Calendar: not present in this export")
+            except Exception as e:
+                errors.append(f"Google Calendar error: {e}")
 
         if not results:
             return _error_page(
