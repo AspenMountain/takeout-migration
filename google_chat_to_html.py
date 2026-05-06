@@ -130,11 +130,14 @@ def slugify(s: str) -> str:
 
 
 def find_chat_root(takeout_dir: Path) -> Path:
-    """Accept either the Takeout root or the 'Google Chat' folder directly."""
-    if (takeout_dir / "Google Chat").is_dir():
-        return takeout_dir / "Google Chat"
+    """Accept the Takeout root, a one-level subdirectory, or the Google Chat folder itself."""
     if takeout_dir.name == "Google Chat":
         return takeout_dir
+    # Check direct child and one level down (ZIP extracts to extracted/Takeout/...)
+    candidates = [takeout_dir] + [p for p in takeout_dir.iterdir() if p.is_dir()]
+    for candidate in candidates:
+        if (candidate / "Google Chat").is_dir():
+            return candidate / "Google Chat"
     raise SystemExit(
         f"Could not find a 'Google Chat' folder under {takeout_dir!s}. "
         "Pass the extracted Takeout dir or the 'Google Chat' folder itself."

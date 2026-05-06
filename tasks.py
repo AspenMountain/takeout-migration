@@ -105,13 +105,70 @@ def render_tasks_docx(task_lists: list[dict]) -> io.BytesIO:
     """Render *task_lists* to a DOCX document returned as a BytesIO buffer."""
     from docx import Document
     from docx.shared import Pt, RGBColor
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
 
     MUTED = RGBColor(0x6B, 0x72, 0x80)
     STRIKE_COLOR = RGBColor(0x9C, 0xA3, 0xAF)
 
     doc = Document()
 
-    # ── Document title ──────────────────────────────────────────────────────
+    def add_page_break() -> None:
+        p = doc.add_paragraph()
+        run = p.add_run()
+        br = OxmlElement("w:br")
+        br.set(qn("w:type"), "page")
+        run._r.append(br)
+
+    def add_section_label(text: str) -> None:
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(4)
+        p.paragraph_format.space_after = Pt(6)
+        run = p.add_run(text.upper())
+        run.font.size = Pt(9)
+        run.font.bold = True
+        run.font.color.rgb = MUTED
+
+    def add_task(task: dict, level: int = 0) -> None:
+        completed = task.get("status") == "completed"
+        title = task.get("title") or "(untitled)"
+        checkbox = "☑" if completed else "☐"
+
+        p = doc.add_paragraph()
+        p.paragraph_format.left_indent = Pt(level * 24)
+        p.paragraph_format.space_after = Pt(2)
+
+        title_run = p.add_run(f"{checkbox}  {title}")
+        if completed:
+            title_run.font.strike = True
+            title_run.font.color.rgb = STRIKE_COLOR
+
+        due = _parse_date(task.get("due"))
+        if due:
+            r = p.add_run(f"   ·   Due: {due.strftime('%b %d, %Y')}")
+            r.font.size = Pt(9)
+            r.font.color.rgb = MUTED
+
+        comp_date = _parse_date(task.get("completed"))
+        if completed and comp_date:
+            r = p.add_run(f"  (done {comp_date.strftime('%b %d, %Y')})")
+            r.font.size = Pt(9)
+            r.font.color.rgb = MUTED
+
+        notes = (task.get("notes") or "").strip()
+        if notes:
+            np = doc.add_paragraph()
+            np.paragraph_format.left_indent = Pt(level * 24 + 20)
+            np.paragraph_format.space_after = Pt(4)
+            nr = np.add_run(notes)
+            nr.font.size = Pt(9)
+            nr.font.italic = True
+            nr.font.color.rgb = MUTED
+
+        for child in child_map.get(task.get("id", ""), []):
+            add_task(child, level + 1)
+
+    # ── Document title ───────────────────────────────────────────────────────
     doc.add_heading("Google Tasks Archive", 0)
     meta = doc.add_paragraph(f"Exported: {dt.date.today().strftime('%B %d, %Y')}")
     for run in meta.runs:
@@ -125,66 +182,38 @@ def render_tasks_docx(task_lists: list[dict]) -> io.BytesIO:
         doc.add_heading(list_title, 1)
 
         if not items:
-            empty = doc.add_paragraph("(no tasks)")
-            for run in empty.runs:
+            p = doc.add_paragraph("(no tasks)")
+            for run in p.runs:
                 run.font.color.rgb = MUTED
                 run.font.italic = True
             continue
 
-        # Tasks have no position field in current exports; sort by created time.
         items = sorted(items, key=lambda t: t.get("created", ""))
 
-        # Build child map: parent_id → [child, ...]
         child_map: dict[str, list[dict]] = {}
         for t in items:
-            pid = t.get("parent")
-            if pid:
-                child_map.setdefault(pid, []).append(t)
+            if t.get("parent"):
+                child_map.setdefault(t["parent"], []).append(t)
 
         root_tasks = [t for t in items if not t.get("parent")]
+        active = [t for t in root_tasks if t.get("status") != "completed"]
+        completed_tasks = [t for t in root_tasks if t.get("status") == "completed"]
 
-        def add_task(task: dict, level: int = 0) -> None:
-            completed = task.get("status") == "completed"
-            title = task.get("title") or "(untitled)"
-            checkbox = "☑" if completed else "☐"  # ☑ / ☐
+        # ── Active tasks ─────────────────────────────────────────────────────
+        add_section_label(f"Active — {len(active)}")
+        if active:
+            for task in active:
+                add_task(task)
+        else:
+            p = doc.add_paragraph("(all tasks completed)")
+            for run in p.runs:
+                run.font.color.rgb = MUTED
+                run.font.italic = True
 
-            # Indented paragraph (Word list styles may not be present in all
-            # default.docx templates, so we use manual indentation instead).
-            p = doc.add_paragraph()
-            p.paragraph_format.left_indent = Pt(level * 24)
-            p.paragraph_format.space_after = Pt(2)
-
-            title_run = p.add_run(f"{checkbox}  {title}")
-            if completed:
-                title_run.font.strike = True
-                title_run.font.color.rgb = STRIKE_COLOR
-
-            due = _parse_date(task.get("due"))
-            if due:
-                due_run = p.add_run(f"   ·   Due: {due.strftime('%b %d, %Y')}")
-                due_run.font.size = Pt(9)
-                due_run.font.color.rgb = MUTED
-
-            comp_date = _parse_date(task.get("completed"))
-            if completed and comp_date:
-                done_run = p.add_run(f"  (done {comp_date.strftime('%b %d, %Y')})")
-                done_run.font.size = Pt(9)
-                done_run.font.color.rgb = MUTED
-
-            notes = (task.get("notes") or "").strip()
-            if notes:
-                np = doc.add_paragraph()
-                np.paragraph_format.left_indent = Pt(level * 24 + 20)
-                np.paragraph_format.space_after = Pt(4)
-                nr = np.add_run(notes)
-                nr.font.size = Pt(9)
-                nr.font.italic = True
-                nr.font.color.rgb = MUTED
-
-            for child in child_map.get(task.get("id", ""), []):
-                add_task(child, level + 1)
-
-        for task in root_tasks:
+        # ── Page break then completed tasks ──────────────────────────────────
+        add_page_break()
+        add_section_label(f"Completed — {len(completed_tasks)}")
+        for task in completed_tasks:
             add_task(task)
 
     buf = io.BytesIO()
