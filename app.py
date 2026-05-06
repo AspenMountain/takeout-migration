@@ -35,6 +35,7 @@ from google_chat_to_html import (
 )
 from tasks import find_tasks_dir, load_task_lists, render_tasks_docx
 from calendar_archive import find_calendar_dir, load_calendars, render_calendar_html
+from keep_archive import find_keep_dir, load_notes, render_keep_html
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB hard cap
@@ -144,6 +145,13 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
         <div class="output-info">
           <strong>google-calendar-archive.html</strong>
           <span>All calendar events with attendees, Meet links, and recurring-event flags. Filterable by calendar.</span>
+        </div>
+      </div>
+      <div class="output-item">
+        <div class="output-icon">🗒️</div>
+        <div class="output-info">
+          <strong>google-keep-archive.html</strong>
+          <span>All Keep notes with colours, pin/archive state, checklists, and label filtering.</span>
         </div>
       </div>
     </div>
@@ -287,6 +295,30 @@ def process():
                     errors.append("Google Calendar: not present in this export")
             except Exception as e:
                 errors.append(f"Google Calendar error: {e}")
+
+            # ── Google Keep ───────────────────────────────────────────────────
+            try:
+                keep_dir = find_keep_dir(extract_dir)
+                if keep_dir:
+                    keep_notes = load_notes(keep_dir)
+                    if keep_notes:
+                        keep_html = render_keep_html(keep_notes)
+                        out_zip.writestr("google-keep-archive.html",
+                                         keep_html.encode("utf-8"))
+                        active_count = sum(
+                            1 for n in keep_notes
+                            if not n.is_archived and not n.is_trashed
+                        )
+                        results.append(
+                            f"Google Keep: {len(keep_notes)} notes "
+                            f"({active_count} active)"
+                        )
+                    else:
+                        errors.append("Google Keep: directory found but no JSON files")
+                else:
+                    errors.append("Google Keep: not present in this export")
+            except Exception as e:
+                errors.append(f"Google Keep error: {e}")
 
         if not results:
             return _error_page(
