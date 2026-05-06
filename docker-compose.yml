@@ -1,0 +1,10 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    read_only: true          # filesystem is read-only; uploads live only in tmpfs
+    tmpfs:
+      - /tmp:size=1g,mode=1777   # where per-request temp dirs live
+    environment:
+      - TMPDIR=/tmp
