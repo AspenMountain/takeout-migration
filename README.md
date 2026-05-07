@@ -4,6 +4,11 @@ A stateless Flask web app that converts a [Google Takeout](https://takeout.googl
 human-readable archives you can keep forever — without any accounts, databases,
 or cloud services involved.
 
+I know there are a load of these tools.
+Since Google changes the formats over time, there are varying degrees of success with any of them.
+This one was written and test for the formats around May 2026.
+No garuantees.
+
 ![alt text](image.png)
 
 ## What it produces
