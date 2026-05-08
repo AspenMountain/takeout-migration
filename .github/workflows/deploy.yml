@@ -12,11 +12,15 @@ jobs:
         uses: appleboy/ssh-action@v1
         with:
           host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
+          username: ${{ vars.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          envs: HOST_PORT
           script: |
             set -e
-            cd /home/ec2-user/takeout-migration
+            cd ${{ vars.HOST_PATH }}
             git pull
-            docker compose up -d --build
-            docker image prune -f   # reclaim space from old layers
+            echo "HOST_PORT=${HOST_PORT:-8000}" > .env
+            sudo docker compose up -d --build
+            sudo docker image prune -f   # reclaim space from old layers
+        env:
+          HOST_PORT: ${{ vars.HOST_PORT }}

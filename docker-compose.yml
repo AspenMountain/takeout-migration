@@ -2,7 +2,7 @@ services:
   web:
     build: .
     ports:
-      - "8000:8000"
+      - "${HOST_PORT:-8000}:8000"
     read_only: true          # filesystem is read-only; uploads live only in tmpfs
     tmpfs:
       # Each request can hold up to ~1 GB of intermediate files (input + extracted).
