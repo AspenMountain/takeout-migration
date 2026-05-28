@@ -216,7 +216,7 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   var progressDetail= document.getElementById('progress-detail');
   var againBtn      = document.getElementById('again-btn');
 
-  againBtn.addEventListener('click', function () { window.location.reload(); });
+  if (againBtn) againBtn.addEventListener('click', function () { window.location.reload(); });
 
   dropZone.addEventListener('click', function () { fileInput.click(); });
   dropZone.addEventListener('dragover', function (e) { e.preventDefault(); dropZone.classList.add('over'); });
