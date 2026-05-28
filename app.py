@@ -109,23 +109,24 @@ h1 { font-size: 24px; margin-bottom: 6px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px 32px; }
 .drop-zone {
   border: 2px dashed var(--border); border-radius: 8px;
-  padding: 40px 24px; text-align: center;
+  padding: 32px 24px; text-align: center;
   transition: border-color 0.15s, background 0.15s; margin-bottom: 20px;
 }
 .drop-zone.over { border-color: var(--accent); background: #f0f6ff; }
-.drop-zone input[type=file] {
-  position: absolute; width: 1px; height: 1px;
-  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
-}
 .drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
-.drop-zone .label { font-weight: 600; margin-bottom: 12px; }
-.choose-btn {
-  display: inline-block; padding: 7px 20px; cursor: pointer;
+.drop-zone .label { font-weight: 600; margin-bottom: 14px; }
+#file-input {
+  display: block; margin: 0 auto; cursor: pointer;
+  font-size: 13px; color: var(--muted);
+}
+#file-input::file-selector-button {
+  padding: 7px 18px; margin-right: 10px;
   border: 1px solid var(--accent); border-radius: 6px;
-  font-size: 13px; font-weight: 600; color: var(--accent);
+  background: #fff; color: var(--accent);
+  font-size: 13px; font-weight: 600; cursor: pointer;
   transition: background 0.15s;
 }
-.choose-btn:hover { background: #e8f0fe; }
+#file-input::file-selector-button:hover { background: #e8f0fe; }
 .drop-zone .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
 #file-name { font-size: 13px; color: var(--muted); margin-bottom: 16px; min-height: 18px; }
 button[type=submit] {
@@ -174,10 +175,9 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   <div class="card">
     <form id="upload-form" method="post" action="/process" enctype="multipart/form-data">
       <div class="drop-zone" id="drop-zone">
-        <input type="file" name="takeout_zip" id="file-input" accept=".zip,.tgz,.gz" multiple>
         <div class="icon">📦</div>
         <div class="label">Drop your Takeout archives here</div>
-        <label for="file-input" class="choose-btn">Choose files</label>
+        <input type="file" name="takeout_zip" id="file-input" accept=".zip,.tgz,.gz" multiple>
         <div class="hint">.zip and .tgz &nbsp;·&nbsp; multiple files OK</div>
       </div>
       <div id="file-name"></div>
