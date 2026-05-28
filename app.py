@@ -53,6 +53,22 @@ app.config["MAX_CONTENT_LENGTH"] = _MAX_UPLOAD_BYTES
 # larger than this are skipped to avoid exhausting tmpfs and RAM.
 _MAX_PASSTHROUGH_FILE = int(os.environ.get("MAX_PASSTHROUGH_MB", "500")) * 1024 * 1024
 
+# Total budget for all Chat attachment files in the output ZIP.
+# Chat exports can contain thousands of images; without a cap the output
+# ZIP balloons to several GB.  Default 500 MB; override with MAX_CHAT_ATTACH_MB.
+# Attachments are added newest-conversation-first so the budget drops the oldest.
+_MAX_CHAT_ATTACHMENTS = int(os.environ.get("MAX_CHAT_ATTACH_MB", "500")) * 1024 * 1024
+
+# File extensions that are already compressed — use ZIP_STORED so we don't
+# waste CPU re-expanding and re-deflating data that won't compress further.
+_PRECOMPRESSED_EXTS = {
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif",
+    ".mp4", ".mov", ".avi", ".mkv", ".webm",
+    ".mp3", ".m4a", ".aac", ".ogg",
+    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".7z",
+    ".pdf",
+}
+
 # Services whose HTML files are passed through as-is (Google-generated reports).
 # (takeout_dir_name, output_prefix, display_name)
 _PASSTHROUGH_HTML_SERVICES = [
@@ -387,15 +403,46 @@ def _process_upload(files: list, tmpdir_obj: tempfile.TemporaryDirectory):
             )
             out_zip.writestr("google-chat-archive.html", chat_html.encode("utf-8"))
             attach_count = 0
-            for c in conversations:
-                for f in c.source_dir.iterdir():
-                    if f.is_file() and f.suffix.lower() not in {".json"}:
-                        out_zip.write(f, f"chat-files/{c.slug}/{f.name}")
-                        attach_count += 1
+            attach_bytes = 0
+            attach_skipped = 0
+            # Newest conversations first so budget keeps the most recent attachments.
+            import datetime as _dt
+            sorted_convos = sorted(
+                conversations,
+                key=lambda c: c.last_activity or _dt.datetime.min,
+                reverse=True,
+            )
+            for c in sorted_convos:
+                # Newest files first within each conversation (by mtime).
+                files = sorted(
+                    (f for f in c.source_dir.iterdir()
+                     if f.is_file() and f.suffix.lower() != ".json"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
+                for f in files:
+                    size = f.stat().st_size
+                    if size > _MAX_PASSTHROUGH_FILE:
+                        attach_skipped += 1
+                        logger.info("skipping large chat attachment (%.1f MB): %s",
+                                    size / 1024 / 1024, f.name)
+                        continue
+                    if attach_bytes + size > _MAX_CHAT_ATTACHMENTS:
+                        attach_skipped += 1
+                        continue
+                    ext = f.suffix.lower()
+                    compress = zipfile.ZIP_STORED if ext in _PRECOMPRESSED_EXTS else zipfile.ZIP_DEFLATED
+                    out_zip.write(f, f"chat-files/{c.slug}/{f.name}", compress_type=compress)
+                    attach_count += 1
+                    attach_bytes += size
+            if attach_skipped:
+                logger.info("chat attachments: included %d (%.1f MB), skipped %d (budget/size limit)",
+                            attach_count, attach_bytes / 1024 / 1024, attach_skipped)
             results.append(
                 f"Google Chat: {len(conversations)} conversations, "
                 f"{sum(len(c.messages) for c in conversations)} messages"
                 + (f", {attach_count} attachment(s)" if attach_count else "")
+                + (f" ({attach_skipped} skipped — over size limit)" if attach_skipped else "")
             )
         except SystemExit as e:
             errors.append(f"Google Chat not found: {e}")
@@ -612,7 +659,8 @@ def _process_upload(files: list, tmpdir_obj: tempfile.TemporaryDirectory):
                             size / 1024 / 1024, pdf.name,
                         )
                         continue
-                    out_zip.write(pdf, f"google-wallet/{pdf.relative_to(wallet_dir)}")
+                    out_zip.write(pdf, f"google-wallet/{pdf.relative_to(wallet_dir)}",
+                                  compress_type=zipfile.ZIP_STORED)
                     included += 1
                 if included:
                     results.append(f"Google Wallet: {included} file(s)")
@@ -636,7 +684,11 @@ def _process_upload(files: list, tmpdir_obj: tempfile.TemporaryDirectory):
                         )
                         skipped += 1
                         continue
-                    out_zip.write(df, f"drive/{df.relative_to(drive_dir)}")
+                    _compress = (zipfile.ZIP_STORED
+                                if df.suffix.lower() in _PRECOMPRESSED_EXTS
+                                else zipfile.ZIP_DEFLATED)
+                    out_zip.write(df, f"drive/{df.relative_to(drive_dir)}",
+                                  compress_type=_compress)
                     included += 1
                 if included:
                     note = f", {skipped} skipped (too large)" if skipped else ""

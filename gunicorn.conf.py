@@ -7,8 +7,14 @@ worker_class = "sync"
 
 bind = "0.0.0.0:8000"
 
-# Large archives can take several minutes; configurable via GUNICORN_TIMEOUT.
+# timeout covers request processing only; the worker is killed if it takes
+# longer than this to produce the *first* byte of the response.
 timeout = int(os.environ.get("GUNICORN_TIMEOUT", "300"))
+
+# graceful_timeout gives an in-flight response this long to finish streaming
+# before the worker is forcibly killed.  Set it well above the largest
+# expected download time (2-3 GB over a slow connection can take minutes).
+graceful_timeout = int(os.environ.get("GUNICORN_GRACEFUL_TIMEOUT", "600"))
 
 # Must point to a writable directory — critical on read-only container filesystems
 # where gunicorn uses this for worker heartbeat files.
