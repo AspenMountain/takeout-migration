@@ -769,7 +769,8 @@ def _render_conversation_body(c: Conversation, owner: Member | None) -> str:
     return "".join(parts)
 
 
-def render_single_page_html(conversations: list[Conversation], owner: Member | None) -> str:
+def render_single_page_html(conversations: list[Conversation], owner: Member | None,
+                            attachment_url_prefix: str = "#") -> str:
     """
     Render all conversations into a single self-contained HTML file.
 
@@ -802,7 +803,7 @@ def render_single_page_html(conversations: list[Conversation], owner: Member | N
         )
 
         members_str = html.escape(", ".join(m.name for m in c.members) or "—")
-        body_html = _render_conversation_body(c, owner)
+        body_html = _render_conversation_body(c, owner, attachment_url_prefix)
         pages.append(
             f'<div id="page-{html.escape(c.slug)}" class="convo-page">'
             f'<div class="convo-page-header">'

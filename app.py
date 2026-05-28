@@ -289,11 +289,20 @@ def _process_upload(files: list, tmpdir_obj: tempfile.TemporaryDirectory):
             chat_root = find_chat_root(extract_dir)
             owner = load_user_info(chat_root)
             conversations = load_conversations(chat_root, owner)
-            chat_html = render_single_page_html(conversations, owner)
+            chat_html = render_single_page_html(
+                conversations, owner, attachment_url_prefix="chat-files"
+            )
             out_zip.writestr("google-chat-archive.html", chat_html.encode("utf-8"))
+            attach_count = 0
+            for c in conversations:
+                for f in c.source_dir.iterdir():
+                    if f.is_file() and f.suffix.lower() not in {".json"}:
+                        out_zip.write(f, f"chat-files/{c.slug}/{f.name}")
+                        attach_count += 1
             results.append(
                 f"Google Chat: {len(conversations)} conversations, "
                 f"{sum(len(c.messages) for c in conversations)} messages"
+                + (f", {attach_count} attachment(s)" if attach_count else "")
             )
         except SystemExit as e:
             errors.append(f"Google Chat not found: {e}")
