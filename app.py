@@ -11,6 +11,7 @@ POST /process  accepts a Takeout archive and returns a ZIP containing
 from __future__ import annotations
 
 import io
+import logging
 import os
 import sys
 import tarfile
@@ -19,6 +20,13 @@ from pathlib import Path
 import tempfile
 
 from flask import Flask, request, send_file
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S",
+)
+logger = logging.getLogger(__name__)
 
 from google_chat_to_html import (
     find_chat_root, load_conversations, load_user_info, render_single_page_html,
@@ -37,7 +45,13 @@ from play_store_archive import (
 )
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500 MB hard cap
+
+_MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "2048")) * 1024 * 1024
+app.config["MAX_CONTENT_LENGTH"] = _MAX_UPLOAD_BYTES
+
+# Per-file cap for binary pass-throughs (Drive, Wallet).  Individual files
+# larger than this are skipped to avoid exhausting tmpfs and RAM.
+_MAX_PASSTHROUGH_FILE = int(os.environ.get("MAX_PASSTHROUGH_MB", "500")) * 1024 * 1024
 
 # Services whose HTML files are passed through as-is (Google-generated reports).
 # (takeout_dir_name, output_prefix, display_name)
@@ -183,6 +197,16 @@ def index():
     return _UPLOAD_PAGE.replace("{error_block}", "")
 
 
+@app.errorhandler(413)
+def too_large(_e):
+    limit_mb = _MAX_UPLOAD_BYTES // (1024 * 1024)
+    return _error_page(
+        f"File too large. Maximum upload size is {limit_mb} MB.<br>"
+        f"For very large exports, self-host and set the "
+        f"<code>MAX_UPLOAD_MB</code> environment variable."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Processing endpoint
 # ---------------------------------------------------------------------------
@@ -199,288 +223,357 @@ def process():
     if not (is_zip or is_tgz):
         return _error_page("Please upload a .zip or .tgz file exported from Google Takeout.")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp = Path(tmpdir)
-        archive_path = tmp / "upload"
-        f.save(str(archive_path))
+    # TemporaryDirectory managed manually so send_file can stream after we return.
+    tmpdir_obj = tempfile.TemporaryDirectory()
+    try:
+        return _process_upload(f, fname_lower, is_zip, tmpdir_obj)
+    except MemoryError:
+        tmpdir_obj.cleanup()
+        logger.error("OOM processing %s", f.filename)
+        return _error_page(
+            "The server ran out of memory processing this archive. "
+            "Try a smaller export or contact the administrator."
+        )
+    except Exception:
+        tmpdir_obj.cleanup()
+        logger.exception("Unhandled error processing %s", f.filename)
+        return _error_page("An unexpected error occurred. Please try again.")
 
-        extract_dir = tmp / "extracted"
-        extract_dir.mkdir()
 
-        if is_zip:
-            try:
-                with zipfile.ZipFile(archive_path) as zf:
-                    _safe_extract_zip(zf, extract_dir)
-            except zipfile.BadZipFile:
-                return _error_page("The uploaded file is not a valid ZIP archive.")
-        else:
-            try:
-                with tarfile.open(archive_path, "r:gz") as tf:
-                    _safe_extract_tar(tf, extract_dir)
-            except tarfile.TarError as e:
-                return _error_page(f"The uploaded file is not a valid TGZ archive: {e}")
+def _process_upload(f, fname_lower: str, is_zip: bool, tmpdir_obj: tempfile.TemporaryDirectory):
+    tmp = Path(tmpdir_obj.name)
+    archive_path = tmp / "upload"
+    f.save(str(archive_path))
+    upload_mb = archive_path.stat().st_size / 1024 / 1024
+    logger.info("processing upload: name=%r size=%.1f MB", f.filename, upload_mb)
 
-        output_buf = io.BytesIO()
-        results: list[str] = []
-        errors: list[str] = []
+    extract_dir = tmp / "extracted"
+    extract_dir.mkdir()
 
-        with zipfile.ZipFile(output_buf, "w", zipfile.ZIP_DEFLATED) as out_zip:
+    if is_zip:
+        try:
+            with zipfile.ZipFile(archive_path) as zf:
+                _safe_extract_zip(zf, extract_dir)
+        except zipfile.BadZipFile:
+            tmpdir_obj.cleanup()
+            return _error_page("The uploaded file is not a valid ZIP archive.")
+    else:
+        try:
+            with tarfile.open(archive_path, "r:gz") as tf:
+                _safe_extract_tar(tf, extract_dir)
+        except tarfile.TarError as e:
+            tmpdir_obj.cleanup()
+            return _error_page(f"The uploaded file is not a valid TGZ archive: {e}")
 
-            # ── Google Chat ──────────────────────────────────────────────
-            try:
-                chat_root = find_chat_root(extract_dir)
-                owner = load_user_info(chat_root)
-                conversations = load_conversations(chat_root, owner)
-                chat_html = render_single_page_html(conversations, owner)
-                out_zip.writestr("google-chat-archive.html", chat_html.encode("utf-8"))
-                results.append(
-                    f"Google Chat: {len(conversations)} conversations, "
-                    f"{sum(len(c.messages) for c in conversations)} messages"
-                )
-            except SystemExit as e:
-                errors.append(f"Google Chat not found: {e}")
-            except Exception as e:
-                errors.append(f"Google Chat error: {e}")
+    # Delete the raw upload now — we only need the extracted tree from here on.
+    archive_path.unlink()
 
-            # ── Google Tasks ─────────────────────────────────────────────
-            try:
-                tasks_dir = find_tasks_dir(extract_dir)
-                if tasks_dir:
-                    task_lists = load_task_lists(tasks_dir)
-                    if task_lists:
-                        docx_buf = render_tasks_docx(task_lists)
-                        out_zip.writestr("google-tasks.docx", docx_buf.read())
-                        total_tasks = sum(len(tl.get("items") or []) for tl in task_lists)
-                        results.append(f"Google Tasks: {len(task_lists)} lists, {total_tasks} tasks")
-                    else:
-                        errors.append("Google Tasks: directory found but no JSON files")
+    output_path = tmp / "output.zip"
+    results: list[str] = []
+    errors: list[str] = []
+
+    with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as out_zip:
+
+        # ── Google Chat ──────────────────────────────────────────────
+        try:
+            chat_root = find_chat_root(extract_dir)
+            owner = load_user_info(chat_root)
+            conversations = load_conversations(chat_root, owner)
+            chat_html = render_single_page_html(conversations, owner)
+            out_zip.writestr("google-chat-archive.html", chat_html.encode("utf-8"))
+            results.append(
+                f"Google Chat: {len(conversations)} conversations, "
+                f"{sum(len(c.messages) for c in conversations)} messages"
+            )
+        except SystemExit as e:
+            errors.append(f"Google Chat not found: {e}")
+        except Exception as e:
+            logger.exception("Google Chat processing failed")
+            errors.append(f"Google Chat error: {e}")
+
+        # ── Google Tasks ─────────────────────────────────────────────
+        try:
+            tasks_dir = find_tasks_dir(extract_dir)
+            if tasks_dir:
+                task_lists = load_task_lists(tasks_dir)
+                if task_lists:
+                    docx_buf = render_tasks_docx(task_lists)
+                    out_zip.writestr("google-tasks.docx", docx_buf.read())
+                    total_tasks = sum(len(tl.get("items") or []) for tl in task_lists)
+                    results.append(f"Google Tasks: {len(task_lists)} lists, {total_tasks} tasks")
                 else:
-                    errors.append("Google Tasks: not present in this export")
-            except Exception as e:
-                errors.append(f"Google Tasks error: {e}")
+                    errors.append("Google Tasks: directory found but no JSON files")
+            else:
+                errors.append("Google Tasks: not present in this export")
+        except Exception as e:
+            logger.exception("Google Tasks processing failed")
+            errors.append(f"Google Tasks error: {e}")
 
-            # ── Google Calendar ───────────────────────────────────────────
-            try:
-                cal_dir = find_calendar_dir(extract_dir)
-                if cal_dir:
-                    calendars = load_calendars(cal_dir)
-                    if calendars:
-                        ics_names = [
-                            p.name for p in sorted(cal_dir.iterdir())
-                            if p.suffix.lower() == ".ics"
-                        ]
-                        cal_html = render_calendar_html(calendars, ics_files=ics_names)
-                        out_zip.writestr("google-calendar-archive.html", cal_html.encode("utf-8"))
-                        for name in ics_names:
-                            out_zip.write(cal_dir / name, f"calendar/{name}")
-                        total_events = sum(len(c["events"]) for c in calendars)
-                        results.append(
-                            f"Google Calendar: {len(calendars)} calendars, {total_events} events"
-                        )
-                    else:
-                        errors.append("Google Calendar: directory found but no .ics files")
+        # ── Google Calendar ───────────────────────────────────────────
+        try:
+            cal_dir = find_calendar_dir(extract_dir)
+            if cal_dir:
+                calendars = load_calendars(cal_dir)
+                if calendars:
+                    ics_names = [
+                        p.name for p in sorted(cal_dir.iterdir())
+                        if p.suffix.lower() == ".ics"
+                    ]
+                    cal_html = render_calendar_html(calendars, ics_files=ics_names)
+                    out_zip.writestr("google-calendar-archive.html", cal_html.encode("utf-8"))
+                    for name in ics_names:
+                        out_zip.write(cal_dir / name, f"calendar/{name}")
+                    total_events = sum(len(c["events"]) for c in calendars)
+                    results.append(
+                        f"Google Calendar: {len(calendars)} calendars, {total_events} events"
+                    )
                 else:
-                    errors.append("Google Calendar: not present in this export")
-            except Exception as e:
-                errors.append(f"Google Calendar error: {e}")
+                    errors.append("Google Calendar: directory found but no .ics files")
+            else:
+                errors.append("Google Calendar: not present in this export")
+        except Exception as e:
+            logger.exception("Google Calendar processing failed")
+            errors.append(f"Google Calendar error: {e}")
 
-            # ── Google Keep ───────────────────────────────────────────────
-            try:
-                keep_dir = find_keep_dir(extract_dir)
-                if keep_dir:
-                    keep_notes = load_notes(keep_dir)
-                    if keep_notes:
-                        keep_html = render_keep_html(keep_notes)
-                        out_zip.writestr("google-keep-archive.html", keep_html.encode("utf-8"))
-                        active_count = sum(
-                            1 for n in keep_notes if not n.is_archived and not n.is_trashed
-                        )
-                        results.append(f"Google Keep: {len(keep_notes)} notes ({active_count} active)")
-                    else:
-                        errors.append("Google Keep: directory found but no JSON files")
+        # ── Google Keep ───────────────────────────────────────────────
+        try:
+            keep_dir = find_keep_dir(extract_dir)
+            if keep_dir:
+                keep_notes = load_notes(keep_dir)
+                if keep_notes:
+                    keep_html = render_keep_html(keep_notes)
+                    out_zip.writestr("google-keep-archive.html", keep_html.encode("utf-8"))
+                    active_count = sum(
+                        1 for n in keep_notes if not n.is_archived and not n.is_trashed
+                    )
+                    results.append(f"Google Keep: {len(keep_notes)} notes ({active_count} active)")
                 else:
-                    errors.append("Google Keep: not present in this export")
-            except Exception as e:
-                errors.append(f"Google Keep error: {e}")
+                    errors.append("Google Keep: directory found but no JSON files")
+            else:
+                errors.append("Google Keep: not present in this export")
+        except Exception as e:
+            logger.exception("Google Keep processing failed")
+            errors.append(f"Google Keep error: {e}")
 
-            # ── Chrome ────────────────────────────────────────────────────
-            try:
-                chrome_dir = find_chrome_dir(extract_dir)
-                if chrome_dir:
-                    chrome_parts: list[str] = []
-                    passed: list[str] = []
-                    for name in PASSTHROUGH_FILES:
-                        src = chrome_dir / name
-                        if src.exists():
-                            out_zip.write(src, f"chrome/{name}")
-                            passed.append(name)
-                    extensions = load_extensions(chrome_dir)
-                    if extensions:
-                        out_zip.writestr("chrome-extensions.html",
-                                         render_extensions_html(extensions).encode("utf-8"))
-                        chrome_parts.append(f"{len(extensions)} extension(s)")
-                    if passed:
-                        chrome_parts.append(f"bookmarks ({', '.join(passed)})")
-                    if chrome_parts:
-                        results.append("Chrome: " + ", ".join(chrome_parts))
-                    else:
-                        errors.append("Chrome: directory found but no usable files")
+        # ── Chrome ────────────────────────────────────────────────────
+        try:
+            chrome_dir = find_chrome_dir(extract_dir)
+            if chrome_dir:
+                chrome_parts: list[str] = []
+                passed: list[str] = []
+                for name in PASSTHROUGH_FILES:
+                    src = chrome_dir / name
+                    if src.exists():
+                        out_zip.write(src, f"chrome/{name}")
+                        passed.append(name)
+                extensions = load_extensions(chrome_dir)
+                if extensions:
+                    out_zip.writestr("chrome-extensions.html",
+                                     render_extensions_html(extensions).encode("utf-8"))
+                    chrome_parts.append(f"{len(extensions)} extension(s)")
+                if passed:
+                    chrome_parts.append(f"bookmarks ({', '.join(passed)})")
+                if chrome_parts:
+                    results.append("Chrome: " + ", ".join(chrome_parts))
                 else:
-                    errors.append("Chrome: not present in this export")
-            except Exception as e:
-                errors.append(f"Chrome error: {e}")
+                    errors.append("Chrome: directory found but no usable files")
+            else:
+                errors.append("Chrome: not present in this export")
+        except Exception as e:
+            logger.exception("Chrome processing failed")
+            errors.append(f"Chrome error: {e}")
 
-            # ── Contacts ──────────────────────────────────────────────────
-            try:
-                contacts_dir = find_contacts_dir(extract_dir)
-                if contacts_dir:
-                    contacts = load_contacts(contacts_dir)
-                    if contacts:
-                        vcf_paths = sorted(contacts_dir.rglob("*.vcf"))
-                        vcf_names = [vp.name for vp in vcf_paths]
-                        for vp in vcf_paths:
-                            out_zip.write(vp, f"contacts/{vp.name}")
-                        out_zip.writestr(
-                            "contacts-archive.html",
-                            render_contacts_html(contacts, vcf_files=vcf_names).encode("utf-8"),
-                        )
-                        results.append(f"Contacts: {len(contacts)} contacts")
-                    else:
-                        errors.append("Contacts: directory found but no contacts parsed")
+        # ── Contacts ──────────────────────────────────────────────────
+        try:
+            contacts_dir = find_contacts_dir(extract_dir)
+            if contacts_dir:
+                contacts = load_contacts(contacts_dir)
+                if contacts:
+                    vcf_paths = sorted(contacts_dir.rglob("*.vcf"))
+                    vcf_names = [vp.name for vp in vcf_paths]
+                    for vp in vcf_paths:
+                        out_zip.write(vp, f"contacts/{vp.name}")
+                    out_zip.writestr(
+                        "contacts-archive.html",
+                        render_contacts_html(contacts, vcf_files=vcf_names).encode("utf-8"),
+                    )
+                    results.append(f"Contacts: {len(contacts)} contacts")
                 else:
-                    errors.append("Contacts: not present in this export")
-            except Exception as e:
-                errors.append(f"Contacts error: {e}")
+                    errors.append("Contacts: directory found but no contacts parsed")
+            else:
+                errors.append("Contacts: not present in this export")
+        except Exception as e:
+            logger.exception("Contacts processing failed")
+            errors.append(f"Contacts error: {e}")
 
-            # ── Gmail / Mail ──────────────────────────────────────────────
-            try:
-                mail_dir = find_mail_dir(extract_dir)
-                if mail_dir:
-                    messages, total_scanned = load_messages(mail_dir)
-                    if messages:
-                        mbox_files = sorted(
-                            p for p in mail_dir.iterdir() if p.suffix.lower() == ".mbox"
-                        )
-                        mbox_names: list[str] = []
-                        for mf in mbox_files:
-                            if mf.stat().st_size <= _MAX_MBOX_SIZE:
-                                out_zip.write(mf, f"mail/{mf.name}")
-                                mbox_names.append(mf.name)
-                        out_zip.writestr(
-                            "mail-archive.html",
-                            render_mail_html(messages, total_scanned,
-                                             mbox_filenames=mbox_names).encode("utf-8"),
-                        )
-                        truncation = (
-                            f", {len(messages):,} of {total_scanned:,} indexed"
-                            if total_scanned > len(messages)
-                            else f", {len(messages):,} messages"
-                        )
-                        results.append(f"Gmail{truncation}")
-                    else:
-                        errors.append("Gmail: directory found but no messages parsed")
+        # ── Gmail / Mail ──────────────────────────────────────────────
+        try:
+            mail_dir = find_mail_dir(extract_dir)
+            if mail_dir:
+                messages, total_scanned = load_messages(mail_dir)
+                if messages:
+                    mbox_files = sorted(
+                        p for p in mail_dir.iterdir() if p.suffix.lower() == ".mbox"
+                    )
+                    mbox_names: list[str] = []
+                    for mf in mbox_files:
+                        if mf.stat().st_size <= _MAX_MBOX_SIZE:
+                            out_zip.write(mf, f"mail/{mf.name}")
+                            mbox_names.append(mf.name)
+                        else:
+                            logger.info(
+                                "skipping MBOX (%.0f MB > limit): %s",
+                                mf.stat().st_size / 1024 / 1024, mf.name,
+                            )
+                    out_zip.writestr(
+                        "mail-archive.html",
+                        render_mail_html(messages, total_scanned,
+                                         mbox_filenames=mbox_names).encode("utf-8"),
+                    )
+                    truncation = (
+                        f", {len(messages):,} of {total_scanned:,} indexed"
+                        if total_scanned > len(messages)
+                        else f", {len(messages):,} messages"
+                    )
+                    results.append(f"Gmail{truncation}")
                 else:
-                    errors.append("Gmail: not present in this export")
-            except Exception as e:
-                errors.append(f"Gmail error: {e}")
+                    errors.append("Gmail: directory found but no messages parsed")
+            else:
+                errors.append("Gmail: not present in this export")
+        except Exception as e:
+            logger.exception("Gmail processing failed")
+            errors.append(f"Gmail error: {e}")
 
-            # ── Google Meet ───────────────────────────────────────────────
-            try:
-                meet_dir = find_meet_dir(extract_dir)
-                if meet_dir:
-                    meetings = load_meetings(meet_dir)
-                    if meetings:
-                        out_zip.writestr(
-                            "google-meet-archive.html",
-                            render_meet_html(meetings).encode("utf-8"),
-                        )
-                        results.append(f"Google Meet: {len(meetings)} meetings")
-                    else:
-                        errors.append("Google Meet: directory found but no meeting records")
+        # ── Google Meet ───────────────────────────────────────────────
+        try:
+            meet_dir = find_meet_dir(extract_dir)
+            if meet_dir:
+                meetings = load_meetings(meet_dir)
+                if meetings:
+                    out_zip.writestr(
+                        "google-meet-archive.html",
+                        render_meet_html(meetings).encode("utf-8"),
+                    )
+                    results.append(f"Google Meet: {len(meetings)} meetings")
                 else:
-                    errors.append("Google Meet: not present in this export")
-            except Exception as e:
-                errors.append(f"Google Meet error: {e}")
+                    errors.append("Google Meet: directory found but no meeting records")
+            else:
+                errors.append("Google Meet: not present in this export")
+        except Exception as e:
+            logger.exception("Google Meet processing failed")
+            errors.append(f"Google Meet error: {e}")
 
-            # ── Play Store ────────────────────────────────────────────────
-            try:
-                play_dir = find_play_store_dir(extract_dir)
-                if play_dir:
-                    apps = load_apps(play_dir)
-                    devices = load_devices(play_dir)
-                    if apps:
-                        out_zip.writestr(
-                            "play-store-archive.html",
-                            render_play_store_html(apps, devices).encode("utf-8"),
-                        )
-                        results.append(
-                            f"Play Store: {len(apps)} apps"
-                            + (f" across {len(devices)} device(s)" if devices else "")
-                        )
-                    else:
-                        errors.append("Play Store: directory found but no install data")
+        # ── Play Store ────────────────────────────────────────────────
+        try:
+            play_dir = find_play_store_dir(extract_dir)
+            if play_dir:
+                apps = load_apps(play_dir)
+                devices = load_devices(play_dir)
+                if apps:
+                    out_zip.writestr(
+                        "play-store-archive.html",
+                        render_play_store_html(apps, devices).encode("utf-8"),
+                    )
+                    results.append(
+                        f"Play Store: {len(apps)} apps"
+                        + (f" across {len(devices)} device(s)" if devices else "")
+                    )
                 else:
-                    errors.append("Play Store: not present in this export")
-            except Exception as e:
-                errors.append(f"Play Store error: {e}")
+                    errors.append("Play Store: directory found but no install data")
+            else:
+                errors.append("Play Store: not present in this export")
+        except Exception as e:
+            logger.exception("Play Store processing failed")
+            errors.append(f"Play Store error: {e}")
 
-            # ── Google Wallet (PDF pass-through) ──────────────────────────
+        # ── Google Wallet (PDF pass-through) ──────────────────────────
+        try:
+            wallet_dir = _find_service_dir(extract_dir, "Google Wallet")
+            if wallet_dir:
+                pdfs = sorted(wallet_dir.rglob("*.pdf"))
+                included = 0
+                for pdf in pdfs:
+                    size = pdf.stat().st_size
+                    if size > _MAX_PASSTHROUGH_FILE:
+                        logger.info(
+                            "skipping Wallet PDF (%.0f MB > limit): %s",
+                            size / 1024 / 1024, pdf.name,
+                        )
+                        continue
+                    out_zip.write(pdf, f"google-wallet/{pdf.relative_to(wallet_dir)}")
+                    included += 1
+                if included:
+                    results.append(f"Google Wallet: {included} file(s)")
+        except Exception as e:
+            logger.exception("Google Wallet processing failed")
+            errors.append(f"Google Wallet error: {e}")
+
+        # ── Drive (pass-through all files) ────────────────────────────
+        try:
+            drive_dir = _find_service_dir(extract_dir, "Drive")
+            if drive_dir:
+                drive_files = sorted(p for p in drive_dir.rglob("*") if p.is_file())
+                included = 0
+                skipped = 0
+                for df in drive_files:
+                    size = df.stat().st_size
+                    if size > _MAX_PASSTHROUGH_FILE:
+                        logger.info(
+                            "skipping Drive file (%.0f MB > limit): %s",
+                            size / 1024 / 1024, df.name,
+                        )
+                        skipped += 1
+                        continue
+                    out_zip.write(df, f"drive/{df.relative_to(drive_dir)}")
+                    included += 1
+                if included:
+                    note = f", {skipped} skipped (too large)" if skipped else ""
+                    results.append(f"Drive: {included} file(s){note}")
+        except Exception as e:
+            logger.exception("Drive processing failed")
+            errors.append(f"Drive error: {e}")
+
+        # ── Pre-formatted HTML reports (My Activity, Account, Gemini, etc.)
+        for dir_name, out_prefix, display_name in _PASSTHROUGH_HTML_SERVICES:
             try:
-                wallet_dir = _find_service_dir(extract_dir, "Google Wallet")
-                if wallet_dir:
-                    pdfs = sorted(wallet_dir.rglob("*.pdf"))
-                    for pdf in pdfs:
-                        out_zip.write(pdf, f"google-wallet/{pdf.relative_to(wallet_dir)}")
-                    if pdfs:
-                        results.append(f"Google Wallet: {len(pdfs)} file(s)")
+                svc_dir = _find_service_dir(extract_dir, dir_name)
+                if svc_dir:
+                    html_files = sorted(svc_dir.rglob("*.html"))
+                    if html_files:
+                        for hf in html_files:
+                            out_zip.write(hf, f"{out_prefix}/{hf.relative_to(svc_dir)}")
+                        results.append(f"{display_name}: {len(html_files)} report(s)")
             except Exception as e:
-                errors.append(f"Google Wallet error: {e}")
+                logger.exception("%s processing failed", display_name)
+                errors.append(f"{display_name} error: {e}")
 
-            # ── Drive (pass-through all files) ────────────────────────────
-            try:
-                drive_dir = _find_service_dir(extract_dir, "Drive")
-                if drive_dir:
-                    drive_files = sorted(p for p in drive_dir.rglob("*") if p.is_file())
-                    for df in drive_files:
-                        out_zip.write(df, f"drive/{df.relative_to(drive_dir)}")
-                    if drive_files:
-                        results.append(f"Drive: {len(drive_files)} file(s)")
-            except Exception as e:
-                errors.append(f"Drive error: {e}")
-
-            # ── Pre-formatted HTML reports (My Activity, Account, Gemini, etc.)
-            for dir_name, out_prefix, display_name in _PASSTHROUGH_HTML_SERVICES:
-                try:
-                    svc_dir = _find_service_dir(extract_dir, dir_name)
-                    if svc_dir:
-                        html_files = sorted(svc_dir.rglob("*.html"))
-                        if html_files:
-                            for hf in html_files:
-                                out_zip.write(hf, f"{out_prefix}/{hf.relative_to(svc_dir)}")
-                            results.append(f"{display_name}: {len(html_files)} report(s)")
-                except Exception as e:
-                    errors.append(f"{display_name} error: {e}")
-
-            # ── index.html ────────────────────────────────────────────────
-            if results:
-                out_zip.writestr(
-                    "index.html",
-                    _render_index_html(out_zip.namelist(), results).encode("utf-8"),
-                )
-
-        if not results:
-            return _error_page(
-                "No recognisable Google data found in this archive.<br>"
-                + "<br>".join(errors)
+        # ── index.html ────────────────────────────────────────────────
+        if results:
+            out_zip.writestr(
+                "index.html",
+                _render_index_html(out_zip.namelist(), results).encode("utf-8"),
             )
 
-        output_buf.seek(0)
-        return send_file(
-            output_buf,
-            mimetype="application/zip",
-            as_attachment=True,
-            download_name="takeout-archive.zip",
+    logger.info(
+        "done: results=%s errors=%s output=%.1f MB",
+        results, errors, output_path.stat().st_size / 1024 / 1024,
+    )
+
+    if not results:
+        tmpdir_obj.cleanup()
+        return _error_page(
+            "No recognisable Google data found in this archive.<br>"
+            + "<br>".join(errors)
         )
+
+    response = send_file(
+        output_path,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="takeout-archive.zip",
+    )
+    response.call_on_close(tmpdir_obj.cleanup)
+    return response
 
 
 # ---------------------------------------------------------------------------

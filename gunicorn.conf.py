@@ -7,8 +7,12 @@ worker_class = "sync"
 
 bind = "0.0.0.0:8000"
 
-# Large ZIPs can take a while to process; give workers room to breathe.
-timeout = 120
+# Large archives can take several minutes; configurable via GUNICORN_TIMEOUT.
+timeout = int(os.environ.get("GUNICORN_TIMEOUT", "300"))
+
+# Must point to a writable directory — critical on read-only container filesystems
+# where gunicorn uses this for worker heartbeat files.
+worker_tmp_dir = "/tmp"
 
 # Recycle workers after N requests to avoid slow memory growth.
 max_requests = 500

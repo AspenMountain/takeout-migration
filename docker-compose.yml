@@ -13,3 +13,9 @@ services:
       # Override worker count here or via a .env file.
       # Default: (2 × CPU count) + 1  (set in gunicorn.conf.py)
       # - WEB_CONCURRENCY=5
+      # Max upload size in MB (default 2048 = 2 GB).
+      # - MAX_UPLOAD_MB=4096
+      # Per-file cap for Drive/Wallet pass-throughs in MB (default 500).
+      # - MAX_PASSTHROUGH_MB=500
+      # Gunicorn worker timeout in seconds (default 300).
+      # - GUNICORN_TIMEOUT=300
