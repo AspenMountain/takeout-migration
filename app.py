@@ -108,13 +108,17 @@ h1 { font-size: 24px; margin-bottom: 6px; }
 .sub { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px 32px; }
 .drop-zone {
-  display: block;
+  position: relative;
   border: 2px dashed var(--border); border-radius: 8px;
-  padding: 40px 24px; text-align: center; cursor: pointer;
+  padding: 40px 24px; text-align: center;
   transition: border-color 0.15s, background 0.15s; margin-bottom: 20px;
 }
 .drop-zone.over, .drop-zone:hover { border-color: var(--accent); background: #f0f6ff; }
-.drop-zone input[type=file] { display: none; }
+.drop-zone input[type=file] {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  opacity: 0; cursor: pointer; z-index: 1;
+}
+.drop-zone-inner { position: relative; pointer-events: none; }
 .drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
 .drop-zone .label { font-weight: 600; }
 .drop-zone .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
@@ -164,12 +168,14 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   {error_block}
   <div class="card">
     <form id="upload-form" method="post" action="/process" enctype="multipart/form-data">
-      <label class="drop-zone" id="drop-zone" for="file-input">
+      <div class="drop-zone" id="drop-zone">
         <input type="file" name="takeout_zip" id="file-input" accept=".zip,.tgz,.gz" multiple>
-        <div class="icon">📦</div>
-        <div class="label">Drop your Takeout archives here</div>
-        <div class="hint">or click to choose files &nbsp;·&nbsp; .zip and .tgz · multiple files OK</div>
-      </label>
+        <div class="drop-zone-inner">
+          <div class="icon">📦</div>
+          <div class="label">Drop your Takeout archives here</div>
+          <div class="hint">or click to choose files &nbsp;·&nbsp; .zip and .tgz · multiple files OK</div>
+        </div>
+      </div>
       <div id="file-name"></div>
       <button type="submit" id="submit-btn" disabled>Convert &amp; Download</button>
       <div id="progress-section" style="display:none">
@@ -219,11 +225,19 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
 
   if (againBtn) againBtn.addEventListener('click', function () { window.location.reload(); });
 
-  dropZone.addEventListener('dragover', function (e) { e.preventDefault(); dropZone.classList.add('over'); });
-  dropZone.addEventListener('dragleave', function () { dropZone.classList.remove('over'); });
-  dropZone.addEventListener('drop', function (e) {
+  // The input is a full-size transparent overlay, so drag events land on it directly.
+  fileInput.addEventListener('dragover',  function (e) { e.preventDefault(); dropZone.classList.add('over'); });
+  fileInput.addEventListener('dragleave', function ()  { dropZone.classList.remove('over'); });
+  fileInput.addEventListener('drop', function (e) {
     e.preventDefault(); dropZone.classList.remove('over');
-    if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; onFiles(e.dataTransfer.files); }
+    var files = e.dataTransfer.files;
+    if (files.length) {
+      // Populate the input so FormData picks them up when the form is submitted.
+      var dt = new DataTransfer();
+      for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
+      fileInput.files = dt.files;
+      onFiles(fileInput.files);
+    }
   });
   fileInput.addEventListener('change', function () { if (this.files.length) onFiles(this.files); });
 
