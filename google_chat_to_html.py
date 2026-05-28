@@ -515,7 +515,7 @@ SINGLE_PAGE_JS = r"""
     page.style.display = 'block';
     var item = document.querySelector('[data-id="' + id + '"]');
     if (item) item.classList.add('active');
-    main.scrollTop = 0;
+    requestAnimationFrame(function () { main.scrollTop = main.scrollHeight; });
     current = id;
     applyHighlights(page);
   }
