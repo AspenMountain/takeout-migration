@@ -132,10 +132,10 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   <div class="card">
     <form id="upload-form" method="post" action="/process" enctype="multipart/form-data">
       <div class="drop-zone" id="drop-zone">
-        <input type="file" name="takeout_zip" id="file-input" accept=".zip,.tgz,.gz">
+        <input type="file" name="takeout_zip" id="file-input" accept=".zip,.tgz,.gz" multiple>
         <div class="icon">📦</div>
-        <div class="label">Drop your Takeout ZIP or TGZ here</div>
-        <div class="hint">or click to choose a file &nbsp;·&nbsp; .zip and .tgz both accepted</div>
+        <div class="label">Drop your Takeout archives here</div>
+        <div class="hint">or click to choose files &nbsp;·&nbsp; .zip and .tgz · multiple files OK</div>
       </div>
       <div id="file-name"></div>
       <button type="submit" id="submit-btn" disabled>Convert &amp; Download</button>
@@ -176,12 +176,18 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   dropZone.addEventListener('dragleave', function () { dropZone.classList.remove('over'); });
   dropZone.addEventListener('drop', function (e) {
     e.preventDefault(); dropZone.classList.remove('over');
-    if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; onFile(e.dataTransfer.files[0]); }
+    if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; onFiles(e.dataTransfer.files); }
   });
-  fileInput.addEventListener('change', function () { if (this.files.length) onFile(this.files[0]); });
+  fileInput.addEventListener('change', function () { if (this.files.length) onFiles(this.files); });
 
-  function onFile(f) {
-    fileName.textContent = f.name + '  (' + (f.size / 1024 / 1024).toFixed(1) + ' MB)';
+  function onFiles(files) {
+    if (files.length === 1) {
+      fileName.textContent = files[0].name + '  (' + (files[0].size / 1024 / 1024).toFixed(1) + ' MB)';
+    } else {
+      var total = 0;
+      for (var i = 0; i < files.length; i++) total += files[i].size;
+      fileName.textContent = files.length + ' files  (' + (total / 1024 / 1024).toFixed(1) + ' MB total)';
+    }
     submitBtn.disabled = false;
   }
   form.addEventListener('submit', function () { submitBtn.disabled = true; progress.style.display = 'block'; });
@@ -213,60 +219,64 @@ def too_large(_e):
 
 @app.route("/process", methods=["POST"])
 def process():
-    f = request.files.get("takeout_zip")
-    if not f or not f.filename:
+    files = [f for f in request.files.getlist("takeout_zip") if f and f.filename]
+    if not files:
         return _error_page("No file was uploaded.")
 
-    fname_lower = f.filename.lower()
-    is_zip = fname_lower.endswith(".zip")
-    is_tgz = fname_lower.endswith(".tgz") or fname_lower.endswith(".tar.gz")
-    if not (is_zip or is_tgz):
-        return _error_page("Please upload a .zip or .tgz file exported from Google Takeout.")
+    for f in files:
+        fn = f.filename.lower()
+        if not (fn.endswith(".zip") or fn.endswith(".tgz") or fn.endswith(".tar.gz")):
+            return _error_page(
+                f"Unsupported file type: {f.filename!r}. "
+                "Please upload .zip or .tgz files exported from Google Takeout."
+            )
 
     # TemporaryDirectory managed manually so send_file can stream after we return.
     tmpdir_obj = tempfile.TemporaryDirectory()
+    filenames = ", ".join(f.filename for f in files)
     try:
-        return _process_upload(f, fname_lower, is_zip, tmpdir_obj)
+        return _process_upload(files, tmpdir_obj)
     except MemoryError:
         tmpdir_obj.cleanup()
-        logger.error("OOM processing %s", f.filename)
+        logger.error("OOM processing %s", filenames)
         return _error_page(
             "The server ran out of memory processing this archive. "
             "Try a smaller export or contact the administrator."
         )
     except Exception:
         tmpdir_obj.cleanup()
-        logger.exception("Unhandled error processing %s", f.filename)
+        logger.exception("Unhandled error processing %s", filenames)
         return _error_page("An unexpected error occurred. Please try again.")
 
 
-def _process_upload(f, fname_lower: str, is_zip: bool, tmpdir_obj: tempfile.TemporaryDirectory):
+def _process_upload(files: list, tmpdir_obj: tempfile.TemporaryDirectory):
     tmp = Path(tmpdir_obj.name)
-    archive_path = tmp / "upload"
-    f.save(str(archive_path))
-    upload_mb = archive_path.stat().st_size / 1024 / 1024
-    logger.info("processing upload: name=%r size=%.1f MB", f.filename, upload_mb)
-
     extract_dir = tmp / "extracted"
     extract_dir.mkdir()
 
-    if is_zip:
-        try:
-            with zipfile.ZipFile(archive_path) as zf:
-                _safe_extract_zip(zf, extract_dir)
-        except zipfile.BadZipFile:
-            tmpdir_obj.cleanup()
-            return _error_page("The uploaded file is not a valid ZIP archive.")
-    else:
-        try:
-            with tarfile.open(archive_path, "r:gz") as tf:
-                _safe_extract_tar(tf, extract_dir)
-        except tarfile.TarError as e:
-            tmpdir_obj.cleanup()
-            return _error_page(f"The uploaded file is not a valid TGZ archive: {e}")
+    for i, f in enumerate(files):
+        fname_lower = f.filename.lower()
+        archive_path = tmp / f"upload_{i}"
+        f.save(str(archive_path))
+        upload_mb = archive_path.stat().st_size / 1024 / 1024
+        logger.info("extracting %d/%d: name=%r size=%.1f MB", i + 1, len(files), f.filename, upload_mb)
 
-    # Delete the raw upload now — we only need the extracted tree from here on.
-    archive_path.unlink()
+        if fname_lower.endswith(".zip"):
+            try:
+                with zipfile.ZipFile(archive_path) as zf:
+                    _safe_extract_zip(zf, extract_dir)
+            except zipfile.BadZipFile:
+                tmpdir_obj.cleanup()
+                return _error_page(f"{f.filename!r} is not a valid ZIP archive.")
+        else:
+            try:
+                with tarfile.open(archive_path, "r:gz") as tf:
+                    _safe_extract_tar(tf, extract_dir)
+            except tarfile.TarError as e:
+                tmpdir_obj.cleanup()
+                return _error_page(f"{f.filename!r} is not a valid TGZ archive: {e}")
+
+        archive_path.unlink()
 
     output_path = tmp / "output.zip"
     results: list[str] = []
