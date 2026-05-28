@@ -108,6 +108,7 @@ h1 { font-size: 24px; margin-bottom: 6px; }
 .sub { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px 32px; }
 .drop-zone {
+  display: block;
   border: 2px dashed var(--border); border-radius: 8px;
   padding: 40px 24px; text-align: center; cursor: pointer;
   transition: border-color 0.15s, background 0.15s; margin-bottom: 20px;
