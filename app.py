@@ -134,7 +134,8 @@ button[type=submit] {
   background: var(--accent); color: #fff; border: none;
   border-radius: 8px; cursor: pointer; transition: opacity 0.15s;
 }
-button[type=submit]:disabled { opacity: 0.5; cursor: default; }
+button[type=submit]:disabled { opacity: 0.4; cursor: default; }
+#no-file-msg { display: none; color: #991b1b; font-size: 13px; margin-bottom: 8px; }
 .outputs { margin-top: 24px; }
 .outputs h3 { font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase;
   letter-spacing: 0.06em; margin: 0 0 12px; }
@@ -181,7 +182,8 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
         <div class="hint">.zip and .tgz &nbsp;·&nbsp; multiple files OK</div>
       </div>
       <div id="file-name"></div>
-      <button type="submit" id="submit-btn" disabled>Convert &amp; Download</button>
+      <div id="no-file-msg">Please choose at least one .zip or .tgz file first.</div>
+      <button type="submit" id="submit-btn">Convert &amp; Download</button>
       <div id="progress-section" style="display:none">
         <div id="progress-track"><div id="progress-bar"></div></div>
         <div id="progress-row">
@@ -225,6 +227,7 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   var progressStatus= document.getElementById('progress-status');
   var progressPct   = document.getElementById('progress-pct');
   var progressDetail= document.getElementById('progress-detail');
+  var noFileMsg     = document.getElementById('no-file-msg');
   var againBtn      = document.getElementById('again-btn');
 
   if (againBtn) againBtn.addEventListener('click', function () { window.location.reload(); });
@@ -238,12 +241,12 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
       var dt = new DataTransfer();
       for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
       fileInput.files = dt.files;
-      onFiles(fileInput.files);
+      showFileNames(fileInput.files);
     }
   });
-  fileInput.addEventListener('change', function () { if (this.files.length) onFiles(this.files); });
+  fileInput.addEventListener('change', function () { if (this.files.length) showFileNames(this.files); });
 
-  function onFiles(files) {
+  function showFileNames(files) {
     if (files.length === 1) {
       fileName.textContent = files[0].name + '  (' + (files[0].size / 1024 / 1024).toFixed(1) + ' MB)';
     } else {
@@ -251,13 +254,17 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
       for (var i = 0; i < files.length; i++) total += files[i].size;
       fileName.textContent = files.length + ' files  (' + (total / 1024 / 1024).toFixed(1) + ' MB total)';
     }
-    submitBtn.disabled = false;
+    if (noFileMsg) noFileMsg.style.display = 'none';
   }
 
   function fmtMB(bytes) { return (bytes / 1024 / 1024).toFixed(1) + ' MB'; }
 
   form.addEventListener('submit', function (e) {
     e.preventDefault();
+    if (!fileInput.files.length) {
+      if (noFileMsg) noFileMsg.style.display = 'block';
+      return;
+    }
     submitBtn.style.display = 'none';
     progressSec.style.display = 'block';
 
