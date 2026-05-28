@@ -171,13 +171,14 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
       </div>
       <div id="file-name"></div>
       <button type="submit" id="submit-btn" disabled>Convert &amp; Download</button>
-      <div id="progress-section">
+      <div id="progress-section" style="display:none">
         <div id="progress-track"><div id="progress-bar"></div></div>
         <div id="progress-row">
           <span id="progress-status">Uploading…</span>
           <span id="progress-pct">0%</span>
         </div>
         <div id="progress-detail"></div>
+        <button type="button" id="again-btn" style="display:none;margin-top:14px;width:100%;padding:10px;font-size:14px;font-weight:600;background:var(--panel);color:var(--accent);border:1px solid var(--accent);border-radius:8px;cursor:pointer;">Convert another file</button>
       </div>
     </form>
     <div class="outputs">
@@ -213,6 +214,9 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   var progressStatus= document.getElementById('progress-status');
   var progressPct   = document.getElementById('progress-pct');
   var progressDetail= document.getElementById('progress-detail');
+  var againBtn      = document.getElementById('again-btn');
+
+  againBtn.addEventListener('click', function () { window.location.reload(); });
 
   dropZone.addEventListener('click', function () { fileInput.click(); });
   dropZone.addEventListener('dragover', function (e) { e.preventDefault(); dropZone.classList.add('over'); });
@@ -282,6 +286,7 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
         progressStatus.textContent = 'Done — your download has started.';
         progressDetail.textContent = '';
         progressPct.textContent    = '';
+        againBtn.style.display = 'block';
       } else {
         var reader = new FileReader();
         reader.onload = function () { document.open(); document.write(reader.result); document.close(); };
@@ -289,13 +294,17 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
       }
     });
 
-    xhr.addEventListener('error', function () {
-      progressStatus.textContent = 'Upload failed — check your connection and try again.';
+    function resetForm(msg) {
+      progressStatus.textContent = msg;
       progressBar.style.background = '#dc2626';
       progressDetail.textContent = '';
-      submitBtn.style.display = 'block';
-      submitBtn.disabled = false;
-    });
+      progressPct.textContent = '';
+      againBtn.style.display = 'block';
+    }
+
+    xhr.addEventListener('error',   function () { resetForm('Upload failed — check your connection and try again.'); });
+    xhr.addEventListener('abort',   function () { resetForm('Upload cancelled.'); });
+    xhr.addEventListener('timeout', function () { resetForm('Timed out — the server took too long to respond.'); });
 
     xhr.open('POST', form.action);
     xhr.send(new FormData(form));
