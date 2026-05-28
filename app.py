@@ -163,12 +163,12 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   {error_block}
   <div class="card">
     <form id="upload-form" method="post" action="/process" enctype="multipart/form-data">
-      <div class="drop-zone" id="drop-zone">
+      <label class="drop-zone" id="drop-zone" for="file-input">
         <input type="file" name="takeout_zip" id="file-input" accept=".zip,.tgz,.gz" multiple>
         <div class="icon">📦</div>
         <div class="label">Drop your Takeout archives here</div>
         <div class="hint">or click to choose files &nbsp;·&nbsp; .zip and .tgz · multiple files OK</div>
-      </div>
+      </label>
       <div id="file-name"></div>
       <button type="submit" id="submit-btn" disabled>Convert &amp; Download</button>
       <div id="progress-section" style="display:none">
@@ -218,7 +218,6 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
 
   if (againBtn) againBtn.addEventListener('click', function () { window.location.reload(); });
 
-  dropZone.addEventListener('click', function () { fileInput.click(); });
   dropZone.addEventListener('dragover', function (e) { e.preventDefault(); dropZone.classList.add('over'); });
   dropZone.addEventListener('dragleave', function () { dropZone.classList.remove('over'); });
   dropZone.addEventListener('drop', function (e) {
