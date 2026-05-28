@@ -732,7 +732,8 @@ def render_conversation_html(c: Conversation, owner: Member | None,
 """
 
 
-def _render_conversation_body(c: Conversation, owner: Member | None) -> str:
+def _render_conversation_body(c: Conversation, owner: Member | None,
+                              attachment_url_prefix: str = "#") -> str:
     """Render the day/thread/message body of a conversation without page chrome."""
     sorted_msgs = sorted(c.messages,
                          key=lambda m: parse_chat_date(m.get("created_date", "")) or dt.datetime.max)
@@ -763,8 +764,7 @@ def _render_conversation_body(c: Conversation, owner: Member | None) -> str:
             multi = "thread-multi" if len(msgs) > 1 else ""
             parts.append(f'<div class="thread {multi}">')
             for m in msgs:
-                # No attachment files are available in the web-upload context.
-                parts.append(render_message(m, owner, c, attachment_url_prefix="#"))
+                parts.append(render_message(m, owner, c, attachment_url_prefix))
             parts.append('</div>')
     return "".join(parts)
 

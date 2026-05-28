@@ -121,7 +121,23 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
   background: #fef2f2; border: 1px solid #fca5a5; color: #991b1b;
   border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; font-size: 14px;
 }
-#progress { display: none; color: var(--muted); font-size: 13px; margin-top: 12px; text-align: center; }
+#progress-section { display: none; margin-top: 16px; }
+#progress-track {
+  height: 8px; background: var(--border); border-radius: 999px;
+  overflow: hidden; margin-bottom: 10px;
+}
+#progress-bar {
+  height: 100%; width: 0%; background: var(--accent);
+  border-radius: 999px; transition: width 0.4s ease;
+}
+#progress-bar.done { background: #16a34a; }
+#progress-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 13px; margin-bottom: 4px;
+}
+#progress-status { font-weight: 600; color: var(--text); }
+#progress-pct { color: var(--muted); font-variant-numeric: tabular-nums; }
+#progress-detail { font-size: 12px; color: var(--muted); }
 </style>
 </head>
 <body>
@@ -139,7 +155,14 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
       </div>
       <div id="file-name"></div>
       <button type="submit" id="submit-btn" disabled>Convert &amp; Download</button>
-      <p id="progress">Processing… large exports (especially with Mail) may take up to a minute.</p>
+      <div id="progress-section">
+        <div id="progress-track"><div id="progress-bar"></div></div>
+        <div id="progress-row">
+          <span id="progress-status">Uploading…</span>
+          <span id="progress-pct">0%</span>
+        </div>
+        <div id="progress-detail"></div>
+      </div>
     </form>
     <div class="outputs">
       <h3>What you'll get (whichever services are in your export)</h3>
@@ -164,12 +187,16 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
 </div>
 <script>
 (function () {
-  var dropZone = document.getElementById('drop-zone');
-  var fileInput = document.getElementById('file-input');
-  var fileName  = document.getElementById('file-name');
-  var submitBtn = document.getElementById('submit-btn');
-  var form      = document.getElementById('upload-form');
-  var progress  = document.getElementById('progress');
+  var dropZone      = document.getElementById('drop-zone');
+  var fileInput     = document.getElementById('file-input');
+  var fileName      = document.getElementById('file-name');
+  var submitBtn     = document.getElementById('submit-btn');
+  var form          = document.getElementById('upload-form');
+  var progressSec   = document.getElementById('progress-section');
+  var progressBar   = document.getElementById('progress-bar');
+  var progressStatus= document.getElementById('progress-status');
+  var progressPct   = document.getElementById('progress-pct');
+  var progressDetail= document.getElementById('progress-detail');
 
   dropZone.addEventListener('click', function () { fileInput.click(); });
   dropZone.addEventListener('dragover', function (e) { e.preventDefault(); dropZone.classList.add('over'); });
@@ -190,7 +217,73 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
     }
     submitBtn.disabled = false;
   }
-  form.addEventListener('submit', function () { submitBtn.disabled = true; progress.style.display = 'block'; });
+
+  function fmtMB(bytes) { return (bytes / 1024 / 1024).toFixed(1) + ' MB'; }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    submitBtn.style.display = 'none';
+    progressSec.style.display = 'block';
+
+    var xhr = new XMLHttpRequest();
+    var speedBytes = 0, speedTime = Date.now(), speedLast = 0;
+
+    xhr.upload.addEventListener('progress', function (e) {
+      if (!e.lengthComputable) return;
+      var pct = e.loaded / e.total;
+      progressBar.style.width = (pct * 100).toFixed(1) + '%';
+      progressPct.textContent  = Math.round(pct * 100) + '%';
+
+      var now = Date.now(), elapsed = (now - speedTime) / 1000;
+      if (elapsed >= 0.8) {
+        speedBytes = (e.loaded - speedLast) / elapsed;
+        speedLast = e.loaded; speedTime = now;
+      }
+      var speedStr = speedBytes > 0 ? ' · ' + fmtMB(speedBytes) + '/s' : '';
+      progressDetail.textContent = fmtMB(e.loaded) + ' of ' + fmtMB(e.total) + speedStr;
+
+      if (pct >= 1) {
+        progressStatus.textContent  = 'Processing…';
+        progressDetail.textContent  = 'Waiting for server — large exports may take a minute.';
+        progressPct.textContent     = '';
+      }
+    });
+
+    xhr.responseType = 'blob';
+
+    xhr.addEventListener('load', function () {
+      if (xhr.status === 200) {
+        var cd = xhr.getResponseHeader('Content-Disposition') || '';
+        var m  = cd.match(/filename[^;=\n]*=(["']?)([^"'\n;]+)\1/);
+        var fn = m ? m[2] : 'takeout-archive.zip';
+        var url = URL.createObjectURL(xhr.response);
+        var a = document.createElement('a');
+        a.href = url; a.download = fn;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+        progressBar.classList.add('done');
+        progressBar.style.width = '100%';
+        progressStatus.textContent = 'Done — your download has started.';
+        progressDetail.textContent = '';
+        progressPct.textContent    = '';
+      } else {
+        var reader = new FileReader();
+        reader.onload = function () { document.open(); document.write(reader.result); document.close(); };
+        reader.readAsText(xhr.response);
+      }
+    });
+
+    xhr.addEventListener('error', function () {
+      progressStatus.textContent = 'Upload failed — check your connection and try again.';
+      progressBar.style.background = '#dc2626';
+      progressDetail.textContent = '';
+      submitBtn.style.display = 'block';
+      submitBtn.disabled = false;
+    });
+
+    xhr.open('POST', form.action);
+    xhr.send(new FormData(form));
+  });
 })();
 </script>
 </body>
