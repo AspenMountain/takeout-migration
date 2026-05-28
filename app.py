@@ -108,20 +108,25 @@ h1 { font-size: 24px; margin-bottom: 6px; }
 .sub { color: var(--muted); font-size: 14px; margin-bottom: 32px; }
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 28px 32px; }
 .drop-zone {
-  position: relative;
   border: 2px dashed var(--border); border-radius: 8px;
   padding: 40px 24px; text-align: center;
   transition: border-color 0.15s, background 0.15s; margin-bottom: 20px;
 }
-.drop-zone.over, .drop-zone:hover { border-color: var(--accent); background: #f0f6ff; }
+.drop-zone.over { border-color: var(--accent); background: #f0f6ff; }
 .drop-zone input[type=file] {
-  position: absolute; inset: 0; width: 100%; height: 100%;
-  opacity: 0; cursor: pointer; z-index: 1;
+  position: absolute; width: 1px; height: 1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap;
 }
-.drop-zone-inner { position: relative; pointer-events: none; }
 .drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
-.drop-zone .label { font-weight: 600; }
-.drop-zone .hint { color: var(--muted); font-size: 13px; margin-top: 4px; }
+.drop-zone .label { font-weight: 600; margin-bottom: 12px; }
+.choose-btn {
+  display: inline-block; padding: 7px 20px; cursor: pointer;
+  border: 1px solid var(--accent); border-radius: 6px;
+  font-size: 13px; font-weight: 600; color: var(--accent);
+  transition: background 0.15s;
+}
+.choose-btn:hover { background: #e8f0fe; }
+.drop-zone .hint { color: var(--muted); font-size: 12px; margin-top: 10px; }
 #file-name { font-size: 13px; color: var(--muted); margin-bottom: 16px; min-height: 18px; }
 button[type=submit] {
   width: 100%; padding: 12px; font-size: 15px; font-weight: 600;
@@ -170,11 +175,10 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
     <form id="upload-form" method="post" action="/process" enctype="multipart/form-data">
       <div class="drop-zone" id="drop-zone">
         <input type="file" name="takeout_zip" id="file-input" accept=".zip,.tgz,.gz" multiple>
-        <div class="drop-zone-inner">
-          <div class="icon">📦</div>
-          <div class="label">Drop your Takeout archives here</div>
-          <div class="hint">or click to choose files &nbsp;·&nbsp; .zip and .tgz · multiple files OK</div>
-        </div>
+        <div class="icon">📦</div>
+        <div class="label">Drop your Takeout archives here</div>
+        <label for="file-input" class="choose-btn">Choose files</label>
+        <div class="hint">.zip and .tgz &nbsp;·&nbsp; multiple files OK</div>
       </div>
       <div id="file-name"></div>
       <button type="submit" id="submit-btn" disabled>Convert &amp; Download</button>
@@ -225,14 +229,12 @@ button[type=submit]:disabled { opacity: 0.5; cursor: default; }
 
   if (againBtn) againBtn.addEventListener('click', function () { window.location.reload(); });
 
-  // The input is a full-size transparent overlay, so drag events land on it directly.
-  fileInput.addEventListener('dragover',  function (e) { e.preventDefault(); dropZone.classList.add('over'); });
-  fileInput.addEventListener('dragleave', function ()  { dropZone.classList.remove('over'); });
-  fileInput.addEventListener('drop', function (e) {
+  dropZone.addEventListener('dragover',  function (e) { e.preventDefault(); dropZone.classList.add('over'); });
+  dropZone.addEventListener('dragleave', function ()  { dropZone.classList.remove('over'); });
+  dropZone.addEventListener('drop', function (e) {
     e.preventDefault(); dropZone.classList.remove('over');
     var files = e.dataTransfer.files;
     if (files.length) {
-      // Populate the input so FormData picks them up when the form is submitted.
       var dt = new DataTransfer();
       for (var i = 0; i < files.length; i++) dt.items.add(files[i]);
       fileInput.files = dt.files;
