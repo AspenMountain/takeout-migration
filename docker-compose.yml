@@ -5,9 +5,11 @@ services:
       - "${HOST_PORT:-8000}:8000"
     read_only: true          # filesystem is read-only; uploads live only in tmpfs
     tmpfs:
-      # Each request can hold up to ~1 GB of intermediate files (input + extracted).
-      # Size this to workers * ~500 MB; adjust WEB_CONCURRENCY and size together.
-      - /tmp:size=4g,mode=1777
+      # Budget: uploads + extracted tree + output zip.
+      # Rule of thumb: (sum of input archive sizes) × 4, rounded up to next 4 GB.
+      # A full two-part Takeout (2 × 2 GB in) needs ~20 GB here.
+      # Override with TMPFS_SIZE in .env (e.g. TMPFS_SIZE=32g).
+      - /tmp:size=${TMPFS_SIZE:-20g},mode=1777
     restart: unless-stopped
     environment:
       - TMPDIR=/tmp
