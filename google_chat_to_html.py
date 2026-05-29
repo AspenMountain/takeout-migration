@@ -462,10 +462,11 @@ html, body { height: 100%; overflow: hidden; }
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--text);
 }
-#convo-list { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+#convo-list { margin: 0; padding: 0; overflow-y: auto; flex: 1; }
 .convo-item {
-  padding: 10px 16px; cursor: pointer;
+  display: block; padding: 10px 16px; cursor: pointer;
   border-bottom: 1px solid var(--border);
+  text-decoration: none; color: inherit;
 }
 .convo-item:hover { background: var(--bg); }
 .convo-item.active { background: #e8f0fe; }
@@ -481,6 +482,10 @@ html, body { height: 100%; overflow: hidden; }
 #welcome h2 { font-size: 20px; color: var(--text); margin-bottom: 8px; }
 #welcome .meta { font-size: 12px; }
 .convo-page { padding: 24px; max-width: 800px; display: none; }
+/* CSS-only navigation for environments without JavaScript (e.g. iPad Files app).
+   When a sidebar link is tapped, the URL hash changes and :target shows the page. */
+.convo-page:target { display: block; }
+#main:has(.convo-page:target) #welcome { display: none; }
 .convo-page-header { margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
 .convo-page-header h2 { margin: 0 0 6px 0; font-size: 18px; }
 .thread.search-match {
@@ -793,13 +798,14 @@ def render_single_page_html(conversations: list[Conversation], owner: Member | N
         search_val = html.escape(" ".join([c.display_name, c.kind,
                                            " ".join(m.name for m in c.members)]).lower())
         sidebar_items.append(
-            f'<li class="convo-item" data-id="{html.escape(c.slug)}" data-search="{search_val}">'
+            f'<a class="convo-item" href="#page-{html.escape(c.slug)}"'
+            f' data-id="{html.escape(c.slug)}" data-search="{search_val}">'
             f'<div class="convo-item-title">{html.escape(c.display_name)}</div>'
             f'<div class="convo-item-meta">'
             f'<span class="kind-pill kind-{c.kind}">{c.kind}</span>'
             f'<span>{len(c.messages)} msgs</span>'
             f'<span>{last}</span>'
-            f'</div></li>'
+            f'</div></a>'
         )
 
         members_str = html.escape(", ".join(m.name for m in c.members) or "—")
@@ -853,7 +859,7 @@ def render_single_page_html(conversations: list[Conversation], owner: Member | N
       <div id="sidebar-stats">{len(conversations)} conversations · {total_msgs} messages</div>
       <input id="search" type="search" placeholder="Search conversations &amp; messages…" autocomplete="off">
     </div>
-    <ul id="convo-list">{''.join(sidebar_items)}</ul>
+    <div id="convo-list">{''.join(sidebar_items)}</div>
   </nav>
   <main id="main">
     <div id="welcome">
