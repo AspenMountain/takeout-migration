@@ -3,18 +3,19 @@ import os
 
 # Scale to available CPUs; override with WEB_CONCURRENCY env var.
 workers = int(os.environ.get("WEB_CONCURRENCY", multiprocessing.cpu_count() * 2 + 1))
-worker_class = "sync"
+# gthread: each worker runs a thread pool.  The worker's main loop keeps
+# updating heartbeats while request threads are busy (e.g. streaming a large
+# file via sendfile).  sync workers can't do this — a long sendfile call
+# blocks the entire worker, the heartbeat stops, and the master kills it.
+worker_class = "gthread"
+threads = int(os.environ.get("WEB_THREADS", "4"))
 
 bind = "0.0.0.0:8000"
 
-# timeout covers request processing only; the worker is killed if it takes
-# longer than this to produce the *first* byte of the response.
+# Worker heartbeat timeout.  With gthread workers the main loop updates
+# heartbeats independently of request threads, so long downloads don't
+# trigger this.  Keep at 300 s to catch genuinely stuck workers.
 timeout = int(os.environ.get("GUNICORN_TIMEOUT", "300"))
-
-# graceful_timeout gives an in-flight response this long to finish streaming
-# before the worker is forcibly killed.  Set it well above the largest
-# expected download time (2-3 GB over a slow connection can take minutes).
-graceful_timeout = int(os.environ.get("GUNICORN_GRACEFUL_TIMEOUT", "600"))
 
 # Must point to a writable directory — critical on read-only container filesystems
 # where gunicorn uses this for worker heartbeat files.
